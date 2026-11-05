@@ -1,0 +1,12 @@
+[package]
+name = "mu-console-protocol"
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/LMA1980/mu-console-protocol"
+authors = ["LMA1980"]
+description = "MuConsole UI <-> data-worker IPC protocol: UiCommand / DataEvent enums, view models and a versioned postcard codec"
+license = "LGPL-3.0-only WITH LGPL-3.0-linking-exception"
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
