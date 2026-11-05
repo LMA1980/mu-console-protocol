@@ -19,6 +19,9 @@
 
 extern crate alloc;
 
+#[cfg(not(target_arch = "wasm32"))]
+extern crate std;
+
 pub mod codec;
 pub mod config;
 pub mod dto;

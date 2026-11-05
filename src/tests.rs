@@ -404,13 +404,11 @@ fn deltas_on_absent_targets_are_ignored() {
 
 #[test]
 fn sanitize_public_log_redacts_private_ips_hosts_and_paths() {
-    let raw = "connect 192.168.42.117 on entrance.lab.local and rubicon /var/lib/action-runner/.cargo/bin/cargo";
+    let raw = "connect 192.0.2.42 on test-node-alpha.internal.local and node-b /var/lib/action-runner/.cargo/bin/cargo";
     let clean = sanitize_public_log(raw);
-    assert!(clean.contains("192.168.###.117"), "clean: {clean}");
-    assert!(!clean.contains("192.168.42.117"), "clean: {clean}");
-    assert!(!clean.contains("entrance"), "clean: {clean}");
-    assert!(!clean.contains("rubicon"), "clean: {clean}");
-    assert!(!clean.contains(".lab.local"), "clean: {clean}");
+    assert!(clean.contains("192.0.###.42"), "clean: {clean}");
+    assert!(!clean.contains("192.0.2.42"), "clean: {clean}");
+    assert!(!clean.contains(".internal.local"), "clean: {clean}");
     assert!(clean.contains(".../bin/cargo"), "clean: {clean}");
 }
 

@@ -14,28 +14,107 @@ use serde::{Deserialize, Serialize};
 use crate::dto::AuthSessionDto;
 use crate::model::{RepoId, SubmoduleId};
 
+/// Mask private LAN and documentation IPv4 addresses:
+/// - RFC 1918 private IPv4 subnets (Class A, Class B, and Class C)
+/// - RFC 5737: 192.0.2.0/24 (TEST-NET-1)
+///
+/// Masks octet 3 with `###` (e.g. `192.0.2.42` -> `192.0.###.42`).
+fn mask_private_ipv4(s: &mut String) {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut replacements = Vec::new();
+
+    while i < len {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        if i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'/') {
+            while i < len && bytes[i].is_ascii_alphanumeric() {
+                i += 1;
+            }
+            continue;
+        }
+
+        let start = i;
+        let mut octets = [0u32; 4];
+        let mut oct_lens = [0usize; 4];
+        let mut valid = true;
+
+        for (oct_idx, oct_slot) in octets.iter_mut().enumerate() {
+            let mut val = 0u32;
+            let mut count = 0;
+            while i < len && bytes[i].is_ascii_digit() && count < 3 {
+                val = val * 10 + (bytes[i] - b'0') as u32;
+                count += 1;
+                i += 1;
+            }
+            if count == 0 || val > 255 {
+                valid = false;
+                break;
+            }
+            *oct_slot = val;
+            oct_lens[oct_idx] = count;
+
+            if oct_idx < 3 {
+                if i < len && bytes[i] == b'.' {
+                    i += 1;
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+
+        if valid && (i == len || !bytes[i].is_ascii_alphanumeric()) {
+            let o1 = octets[0];
+            let o2 = octets[1];
+            let is_match = (o1 == 10)
+                || (o1 == 172 && (16..=31).contains(&o2))
+                || (o1 == 192 && o2 == 168)
+                || (o1 == 192 && o2 == 0);
+
+            if is_match {
+                let o3_start = start + oct_lens[0] + 1 + oct_lens[1] + 1;
+                let o3_end = o3_start + oct_lens[2];
+                replacements.push((o3_start, o3_end));
+            }
+        }
+    }
+
+    for (start, end) in replacements.into_iter().rev() {
+        s.replace_range(start..end, "###");
+    }
+}
+
 /// Sanitize a log message for public display:
-/// - Partially masks private LAN IPv4 addresses (`192.168.<oct3>.<oct4>` -> `192.168.###.<oct4>`);
-/// - Redacts internal lab hostnames (`entrance`, `rubicon`, `pey-wail-deu`, `.lab.local`);
+/// - Partially masks private LAN and documentation IPv4 addresses (`<net>.<subnet>.<host>` -> `<net>.###.<host>`);
+/// - Redacts internal domain suffixes (`.internal.local`, `.local`, `.internal`, `.lan`);
+/// - Applies optional host mappings from `MU_REDACT_HOSTNAMES` (when running on native platforms);
 /// - Truncates deep filesystem paths (`/a/b/c/seg1/seg2` -> `.../seg1/seg2`).
 #[must_use]
 pub fn sanitize_public_log(raw: &str) -> String {
-    let mut s = raw
-        .replace("pey-wail-deu", "worker-riscv64")
-        .replace("entrance", "node-a")
-        .replace("rubicon", "node-b")
-        .replace(".lab.local", "");
+    let mut s = String::from(raw);
 
-    // Mask 192.168.<oct3>.<oct4> -> 192.168.###.<oct4>.
-    while let Some(idx) = s.find("192.168.") {
-        let after = &s[idx + 8..];
-        let oct3_len = after.bytes().take_while(u8::is_ascii_digit).count();
-        if oct3_len > 0 && after.as_bytes().get(oct3_len) == Some(&b'.') {
-            s.replace_range(idx + 8..idx + 8 + oct3_len, "###");
-        } else {
-            break;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(mappings) = std::env::var("MU_REDACT_HOSTNAMES") {
+        for mapping in mappings.split(',') {
+            if let Some((from, to)) = mapping.split_once('=') {
+                s = s.replace(from.trim(), to.trim());
+            } else if let Some((from, to)) = mapping.split_once(':') {
+                s = s.replace(from.trim(), to.trim());
+            }
         }
     }
+
+    s = s
+        .replace(".internal.local", "")
+        .replace(".local", "")
+        .replace(".internal", "")
+        .replace(".lan", "");
+
+    mask_private_ipv4(&mut s);
 
     // Truncate deep absolute paths with >= 3 leading segments to `.../seg1/seg2`.
     let mut out = String::with_capacity(s.len());
