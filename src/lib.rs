@@ -33,5 +33,6 @@ mod tests;
 
 pub use codec::{decode, encode, peek_version, CodecError, PROTOCOL_VERSION};
 pub use config::{WorkerConfig, LIVE_SCENARIO};
+pub use dto::format_job_id;
 pub use model::*;
 pub use view::*;

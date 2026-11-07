@@ -9,6 +9,7 @@
 //! strings, timestamps are Unix epoch milliseconds and unknown fields are
 //! ignored, so servers may add fields without breaking the console.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -58,6 +59,21 @@ pub fn parse_job_id_str(s: &str) -> u64 {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash
+}
+
+/// Format a `u64` job identifier for display.
+///
+/// Small integer job identifiers (e.g. `100`, `1234` in fixture scenarios)
+/// format as decimal strings, whereas packed `job-{ts}-{sha}` identifiers
+/// produced by [`parse_job_id_str`] format as their 6-character hexadecimal
+/// commit SHA prefix (e.g. `"97ed67"`).
+#[must_use]
+pub fn format_job_id(job_id: u64) -> String {
+    if (job_id >> 24) >= 1_000_000_000 {
+        format!("{:06x}", job_id & 0x00FF_FFFF)
+    } else {
+        format!("{job_id}")
+    }
 }
 
 #[derive(Deserialize)]
@@ -494,7 +510,9 @@ pub struct PackageDto {
     pub versions_count: u32,
     #[serde(default, deserialize_with = "null_default")]
     pub sha256_prefix: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
+    pub sha256: String,
+    #[serde(default, alias = "dependency_count")]
     pub deps_count: u32,
     #[serde(default)]
     pub yanked: bool,
@@ -506,6 +524,18 @@ pub struct PackageDto {
     pub versions: Vec<String>,
 }
 
+impl PackageDto {
+    /// Return the 8-character SHA-256 prefix, falling back to `sha256` when `sha256_prefix` is empty.
+    #[must_use]
+    pub fn effective_sha256_prefix(&self) -> String {
+        if !self.sha256_prefix.is_empty() {
+            self.sha256_prefix.clone()
+        } else {
+            self.sha256.chars().take(8).collect()
+        }
+    }
+}
+
 /// `GET /api/reg/v1/canaries` (`MuRegist` canary bundle & taint entry).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanaryBundleDto {
@@ -514,11 +544,11 @@ pub struct CanaryBundleDto {
     pub owner: String,
     #[serde(default, deserialize_with = "null_default")]
     pub repo: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, alias = "service_name", deserialize_with = "null_default")]
     pub service: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, alias = "binary_digest", deserialize_with = "null_default")]
     pub artifact_digest: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, alias = "status", deserialize_with = "null_default")]
     pub state: CanaryBundleState,
     #[serde(default)]
     pub taint_reason: Option<String>,
@@ -528,42 +558,127 @@ pub struct CanaryBundleDto {
     pub trace_id: String,
 }
 
+/// Tainted digest record included in `MuRegist` `/api/v1/canaries` envelope (`taints[]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaintedDigestDto {
+    pub digest: String,
+    #[serde(default, alias = "service_name", deserialize_with = "null_default")]
+    pub service: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub reason: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub trace_id: String,
+}
+
 /// `GET /api/reg/v1/cas/status` (`MuRegist` CAS storage health).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct CasStatusDto {
-    #[serde(default)]
+    #[serde(default, alias = "total_blobs")]
     pub blob_count: u64,
-    #[serde(default)]
+    #[serde(default, alias = "total_bytes")]
     pub dedup_bytes: u64,
     #[serde(default)]
     pub raw_bytes: u64,
     #[serde(default)]
+    pub dedup_savings_bytes: u64,
+    #[serde(default, alias = "dedup_ratio_bps")]
     pub dedup_ratio_bp: u32,
     #[serde(default)]
     pub gc_watermark_pct: u32,
     #[serde(default)]
     pub last_scrub_epoch_ms: u64,
-    #[serde(default)]
+    #[serde(default, alias = "corrupted_blobs")]
     pub corrupt_blobs: u32,
+}
+
+impl CasStatusDto {
+    /// Effective raw (un-deduplicated) byte count.
+    #[must_use]
+    pub fn effective_raw_bytes(&self) -> u64 {
+        if self.raw_bytes > 0 {
+            self.raw_bytes
+        } else {
+            self.dedup_bytes.saturating_add(self.dedup_savings_bytes)
+        }
+    }
 }
 
 // ---------------------------------------------------------------- Observe DTOs (MuObserve)
 
 /// Node entry of [`SmartscapeDto`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SmartscapeNodeDto {
     pub id: String,
+    #[serde(default, alias = "name", deserialize_with = "null_default")]
     pub label: String,
     #[serde(default, deserialize_with = "null_default")]
     pub layer: SmartscapeLayer,
     #[serde(default)]
     pub req_per_sec_bp: u32,
     #[serde(default)]
+    pub request_rate_rps: f64,
+    #[serde(default)]
     pub error_rate_bp: u32,
     #[serde(default)]
+    pub error_rate_pct: f64,
+    #[serde(default)]
     pub p95_ms: u32,
+    #[serde(default)]
+    pub p95_latency_ms: f64,
     #[serde(default = "default_true")]
     pub healthy: bool,
+    #[serde(default, deserialize_with = "null_default")]
+    pub health_state: String,
+}
+
+impl SmartscapeNodeDto {
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn effective_req_per_sec_bp(&self) -> u32 {
+        if self.req_per_sec_bp > 0 {
+            self.req_per_sec_bp
+        } else if self.request_rate_rps > 0.0 {
+            (self.request_rate_rps * 100.0).round() as u32
+        } else {
+            0
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn effective_error_rate_bp(&self) -> u32 {
+        if self.error_rate_bp > 0 {
+            self.error_rate_bp
+        } else if self.error_rate_pct > 0.0 {
+            (self.error_rate_pct * 100.0).round() as u32
+        } else {
+            0
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn effective_p95_ms(&self) -> u32 {
+        if self.p95_ms > 0 {
+            self.p95_ms
+        } else if self.p95_latency_ms > 0.0 {
+            self.p95_latency_ms.round() as u32
+        } else {
+            0
+        }
+    }
+
+    #[must_use]
+    pub fn effective_healthy(&self) -> bool {
+        if !self.health_state.is_empty() {
+            !matches!(
+                self.health_state.to_ascii_lowercase().as_str(),
+                "unhealthy" | "degraded" | "critical" | "error"
+            )
+        } else {
+            self.healthy
+        }
+    }
 }
 
 const fn default_true() -> bool {
@@ -571,27 +686,104 @@ const fn default_true() -> bool {
 }
 
 /// Edge entry of [`SmartscapeDto`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SmartscapeEdgeDto {
+    #[serde(alias = "source")]
     pub from_id: String,
+    #[serde(alias = "target")]
     pub to_id: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, alias = "relation", deserialize_with = "null_default")]
     pub protocol: String,
     #[serde(default)]
     pub call_rate_rps: u32,
     #[serde(default)]
+    pub request_rate_rps: f64,
+    #[serde(default)]
     pub error_rate_bp: u32,
     #[serde(default)]
+    pub error_rate_pct: f64,
+    #[serde(default)]
     pub p95_ms: u32,
+    #[serde(default)]
+    pub p95_latency_ms: f64,
+}
+
+impl SmartscapeEdgeDto {
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn effective_call_rate_rps(&self) -> u32 {
+        if self.call_rate_rps > 0 {
+            self.call_rate_rps
+        } else if self.request_rate_rps > 0.0 {
+            self.request_rate_rps.round().max(1.0) as u32
+        } else {
+            0
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn effective_error_rate_bp(&self) -> u32 {
+        if self.error_rate_bp > 0 {
+            self.error_rate_bp
+        } else if self.error_rate_pct > 0.0 {
+            (self.error_rate_pct * 100.0).round() as u32
+        } else {
+            0
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn effective_p95_ms(&self) -> u32 {
+        if self.p95_ms > 0 {
+            self.p95_ms
+        } else if self.p95_latency_ms > 0.0 {
+            self.p95_latency_ms.round() as u32
+        } else {
+            0
+        }
+    }
 }
 
 /// `GET /api/obs/v1/smartscape`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SmartscapeDto {
     #[serde(default, deserialize_with = "null_default")]
     pub nodes: Vec<SmartscapeNodeDto>,
     #[serde(default, deserialize_with = "null_default")]
+    pub services: Vec<SmartscapeNodeDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub processes: Vec<SmartscapeNodeDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub hosts: Vec<SmartscapeNodeDto>,
+    #[serde(default, deserialize_with = "null_default")]
     pub edges: Vec<SmartscapeEdgeDto>,
+}
+
+impl SmartscapeDto {
+    /// Return unified nodes list across `nodes` or `services` + `processes` + `hosts`.
+    #[must_use]
+    pub fn into_nodes_and_edges(self) -> (Vec<SmartscapeNodeDto>, Vec<SmartscapeEdgeDto>) {
+        if !self.nodes.is_empty() {
+            return (self.nodes, self.edges);
+        }
+        let mut all =
+            Vec::with_capacity(self.services.len() + self.processes.len() + self.hosts.len());
+        for mut n in self.services {
+            n.layer = SmartscapeLayer::Service;
+            all.push(n);
+        }
+        for mut n in self.processes {
+            n.layer = SmartscapeLayer::Process;
+            all.push(n);
+        }
+        for mut n in self.hosts {
+            n.layer = SmartscapeLayer::Host;
+            all.push(n);
+        }
+        (all, self.edges)
+    }
 }
 
 /// Span entry of [`TraceDto`].
@@ -601,6 +793,7 @@ pub struct TraceSpanDto {
     #[serde(default)]
     pub parent_span_id: Option<String>,
     pub service: String,
+    #[serde(default, alias = "span_name", deserialize_with = "null_default")]
     pub operation: String,
     #[serde(default)]
     pub start_offset_us: u64,
@@ -608,12 +801,25 @@ pub struct TraceSpanDto {
     pub duration_us: u64,
     #[serde(default)]
     pub self_time_us: u64,
-    #[serde(default)]
+    #[serde(default, alias = "is_critical_path")]
     pub critical_path: bool,
     #[serde(default)]
     pub error: bool,
     #[serde(default, deserialize_with = "null_default")]
+    pub status: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub status_code: String,
+    #[serde(default, alias = "node_id", deserialize_with = "null_default")]
     pub hardware_class: String,
+}
+
+impl TraceSpanDto {
+    #[must_use]
+    pub fn effective_error(&self) -> bool {
+        self.error
+            || self.status.eq_ignore_ascii_case("error")
+            || self.status_code.eq_ignore_ascii_case("error")
+    }
 }
 
 /// `GET /api/obs/v1/traces` and `GET /api/obs/v1/traces/{trace_id}`.
@@ -627,13 +833,40 @@ pub struct TraceDto {
     #[serde(default)]
     pub duration_ms: u32,
     #[serde(default)]
+    pub duration_us: u64,
+    #[serde(default)]
     pub error: bool,
     #[serde(default)]
-    pub slow_p99: bool,
+    pub error_count: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub status: String,
     #[serde(default)]
+    pub slow_p99: bool,
+    #[serde(default, alias = "start_epoch_ms")]
     pub started_epoch_ms: u64,
     #[serde(default, deserialize_with = "null_default")]
     pub spans: Vec<TraceSpanDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub correlated_logs: Vec<OtelLogDto>,
+}
+
+impl TraceDto {
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn effective_duration_ms(&self) -> u32 {
+        if self.duration_ms > 0 {
+            self.duration_ms
+        } else if self.duration_us > 0 {
+            ((self.duration_us + 500) / 1_000).max(1) as u32
+        } else {
+            0
+        }
+    }
+
+    #[must_use]
+    pub fn effective_error(&self) -> bool {
+        self.error || self.error_count > 0 || self.status.eq_ignore_ascii_case("error")
+    }
 }
 
 /// `GET /api/obs/v1/problems`.
@@ -653,6 +886,22 @@ pub struct ProblemDto {
     pub root_cause_trace_id: String,
     #[serde(default = "default_true")]
     pub active: bool,
+    #[serde(default, deserialize_with = "null_default")]
+    pub status: String,
+}
+
+impl ProblemDto {
+    #[must_use]
+    pub fn effective_active(&self) -> bool {
+        if !self.status.is_empty() {
+            !matches!(
+                self.status.to_ascii_lowercase().as_str(),
+                "closed" | "resolved" | "inactive"
+            )
+        } else {
+            self.active
+        }
+    }
 }
 
 /// `GET /api/obs/v1/logs`.
@@ -660,12 +909,14 @@ pub struct ProblemDto {
 pub struct OtelLogDto {
     #[serde(default)]
     pub timestamp_ms: u64,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, alias = "severity_text", deserialize_with = "null_default")]
     pub severity: LogSeverity,
     pub service: String,
     #[serde(default)]
     pub span_id: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
     pub trace_id: String,
+    #[serde(default, alias = "body", deserialize_with = "null_default")]
     pub message: String,
 }
 
@@ -692,24 +943,94 @@ pub struct MetricSeriesDto {
 }
 
 /// `GET /api/obs/v1/store/status`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct StoreStatusDto {
     #[serde(default)]
     pub hot_duckdb_rows: u64,
     #[serde(default)]
-    pub hot_duckdb_bytes: u64,
+    pub hot_spans: u64,
     #[serde(default)]
+    pub hot_logs: u64,
+    #[serde(default)]
+    pub hot_metric_points: u64,
+    #[serde(default)]
+    pub hot_duckdb_bytes: u64,
+    #[serde(default, alias = "parquet_segments")]
     pub cold_parquet_partitions: u32,
     #[serde(default)]
     pub cold_parquet_rows: u64,
+    #[serde(default)]
+    pub cold_spans: u64,
+    #[serde(default)]
+    pub cold_logs: u64,
+    #[serde(default)]
+    pub cold_metric_points: u64,
     #[serde(default)]
     pub cold_parquet_bytes: u64,
     #[serde(default)]
     pub zstd_compression_bp: u32,
     #[serde(default)]
+    pub estimated_compression_ratio: f64,
+    #[serde(default)]
     pub retention_days: u32,
     #[serde(default, deserialize_with = "null_default")]
     pub oldest_watermark_iso: String,
+}
+
+impl StoreStatusDto {
+    #[must_use]
+    pub fn effective_hot_rows(&self) -> u64 {
+        if self.hot_duckdb_rows > 0 {
+            self.hot_duckdb_rows
+        } else {
+            self.hot_spans
+                .saturating_add(self.hot_logs)
+                .saturating_add(self.hot_metric_points)
+        }
+    }
+
+    #[must_use]
+    pub fn effective_cold_rows(&self) -> u64 {
+        if self.cold_parquet_rows > 0 {
+            self.cold_parquet_rows
+        } else {
+            self.cold_spans
+                .saturating_add(self.cold_logs)
+                .saturating_add(self.cold_metric_points)
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn effective_zstd_compression_bp(&self) -> u32 {
+        if self.zstd_compression_bp > 0 {
+            self.zstd_compression_bp
+        } else if self.estimated_compression_ratio > 0.0 {
+            (self.estimated_compression_ratio * 100.0).round() as u32
+        } else {
+            100
+        }
+    }
+}
+
+/// `GET /api/cluster/nodes` entry (`ActionRunner-controller`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClusterNodeDto {
+    pub node_id: String,
+    #[serde(default, alias = "online")]
+    pub is_online: bool,
+    #[serde(default, deserialize_with = "null_default")]
+    pub arch: String,
+    #[serde(default)]
+    pub active_slots: u32,
+    #[serde(default)]
+    pub max_slots: u32,
+    #[serde(default)]
+    pub cpu_load_pct: f64,
+    #[serde(default)]
+    pub ram_used_mb: u64,
+    #[serde(default)]
+    pub ram_total_mb: u64,
 }
 
 /// `GET /api/auth/session` and `POST /api/auth/redeem` response (`ActionRunner-controller`).
@@ -736,6 +1057,8 @@ pub mod paths {
     pub const CD_EVENTS: &str = "/api/cd/events";
     /// Repository list.
     pub const REPOS: &str = "/api/repos";
+    /// Cluster fabric worker nodes (`ActionRunner-controller`).
+    pub const CLUSTER_NODES: &str = "/api/cluster/nodes";
     /// Active CD deployment leases.
     pub const LEASES: &str = "/api/cd/leases";
     /// Operator authentication session probe.
