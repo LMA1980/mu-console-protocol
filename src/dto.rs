@@ -158,6 +158,8 @@ pub struct RepoDto {
     pub visibility: Visibility,
     #[serde(default, deserialize_with = "null_default")]
     pub default_branch: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub commit_sha: String,
     #[serde(default, deserialize_with = "de_opt_job_id")]
     pub latest_job_id: Option<u64>,
     /// Quality score, percent 0..=100.
@@ -194,6 +196,8 @@ pub struct SummaryHistoryDto {
     #[serde(default, deserialize_with = "de_job_id")]
     pub job_id: u64,
     #[serde(default, deserialize_with = "null_default")]
+    pub commit_sha: String,
+    #[serde(default, deserialize_with = "null_default")]
     pub score: u32,
     #[serde(default, deserialize_with = "null_default")]
     pub coverage: f64,
@@ -206,6 +210,8 @@ pub struct RepoSummaryDto {
     pub repo: String,
     #[serde(default, deserialize_with = "null_default")]
     pub status: RepoStatus,
+    #[serde(default, deserialize_with = "null_default")]
+    pub commit_sha: String,
     #[serde(default, deserialize_with = "null_default")]
     pub score: u32,
     #[serde(default, deserialize_with = "null_default")]
@@ -220,6 +226,12 @@ pub struct RepoSummaryDto {
     /// Structured sparkline history returned by `ActionRunner-controller`.
     #[serde(default, deserialize_with = "null_default")]
     pub history: Vec<SummaryHistoryDto>,
+    /// Submodules returned by `/api/repos/{owner}/{repo}/summary`.
+    #[serde(default, deserialize_with = "null_default")]
+    pub submodules: Vec<SubmoduleDto>,
+    /// Parent superprojects returned by `/api/repos/{owner}/{repo}/summary`.
+    #[serde(default, deserialize_with = "null_default")]
+    pub parents: Vec<ParentDto>,
 }
 
 /// `stations[]` entry of [`TopologyDto`].
@@ -252,6 +264,8 @@ pub struct TrainDto {
     pub job_id: u64,
     #[serde(rename = "ref")]
     pub ref_name: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub commit_sha: String,
     /// Station id of the current stage.
     #[serde(default, deserialize_with = "null_default")]
     pub stage: String,
@@ -1124,7 +1138,19 @@ pub struct CiQueueStageDto {
     pub status: CiQueueStageStatusDto,
 }
 
-/// One job record inside `active_jobs`, `queued_jobs`, or `recent_jobs` of `GET /api/queue`.
+/// Nested `record` wrapper inside `active_jobs` / `queued_jobs` (`QueueItemView`) of `GET /api/queue`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiQueueJobInnerDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub job: CiQueueJobSpecDto,
+    #[serde(default)]
+    pub metrics: Option<CiQueueMetricsDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub stages: Vec<CiQueueStageDto>,
+}
+
+/// One job record inside `active_jobs`, `queued_jobs`, or `recent_jobs` of `GET /api/queue`,
+/// or a single `GET /api/jobs/{id}` response.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CiQueueJobRecordDto {
     #[serde(default, deserialize_with = "null_default")]
@@ -1133,6 +1159,33 @@ pub struct CiQueueJobRecordDto {
     pub metrics: Option<CiQueueMetricsDto>,
     #[serde(default, deserialize_with = "null_default")]
     pub stages: Vec<CiQueueStageDto>,
+    #[serde(default)]
+    pub elapsed_secs: u64,
+    #[serde(default)]
+    pub wait_secs: u64,
+    #[serde(default)]
+    pub position: u32,
+    #[serde(default)]
+    pub record: Option<CiQueueJobInnerDto>,
+}
+
+impl CiQueueJobRecordDto {
+    /// Unwrap nested `QueueItemView.record` if present (`active_jobs` and `queued_jobs`).
+    #[must_use]
+    pub fn into_unwrapped(mut self) -> Self {
+        if let Some(inner) = self.record.take() {
+            if self.job.id.is_empty() {
+                self.job = inner.job;
+            }
+            if self.metrics.is_none() {
+                self.metrics = inner.metrics;
+            }
+            if self.stages.is_empty() {
+                self.stages = inner.stages;
+            }
+        }
+        self
+    }
 }
 
 /// `GET /api/queue` response (`ActionRunner-controller`).
@@ -1239,5 +1292,29 @@ pub mod paths {
     #[must_use]
     pub fn job_restart(job_id: u64) -> String {
         format!("/api/jobs/{job_id}/restart")
+    }
+
+    /// `/api/jobs/{job_id}/restart` using the canonical string job ID (`"job-{ts}-{sha8}"`).
+    #[must_use]
+    pub fn job_restart_id(job_id: &str) -> String {
+        format!("/api/jobs/{job_id}/restart")
+    }
+
+    /// `/api/jobs/{job_id}/resume` (`POST` on `ActionRunner-controller`, preserving completed stages).
+    #[must_use]
+    pub fn job_resume_id(job_id: &str) -> String {
+        format!("/api/jobs/{job_id}/resume")
+    }
+
+    /// `/api/jobs/{job_id}` (`GET` structured job detail & per-stage statuses).
+    #[must_use]
+    pub fn job_detail_id(job_id: &str) -> String {
+        format!("/api/jobs/{job_id}")
+    }
+
+    /// `/api/jobs/{job_id}/log` (`GET` raw build log text).
+    #[must_use]
+    pub fn job_log_id(job_id: &str) -> String {
+        format!("/api/jobs/{job_id}/log")
     }
 }

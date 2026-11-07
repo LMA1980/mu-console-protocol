@@ -263,7 +263,7 @@ impl SubView {
 ///
 /// Ordering is `owner`, then `repo`; view-model repository lists are kept in
 /// this order so diffs and patches are deterministic.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize)]
 pub struct RepoId {
     pub owner: String,
     pub repo: String,
@@ -385,8 +385,16 @@ pub enum UiCommand {
     },
     /// Directly set the operator authentication session state.
     SetAuthSession(AuthSessionDto),
-    /// Restart / retry a specific CI job (`POST /jobs/{id}/restart`).
+    /// Restart / retry a specific CI job (`POST /api/jobs/{id}/restart`).
     RestartJob {
+        job_id: u64,
+    },
+    /// Resume an interrupted/failed CI job (`POST /api/jobs/{id}/resume`, preserving completed stages).
+    ResumeJob {
+        job_id: u64,
+    },
+    /// Select a CI job in `CI > Queue & Logs` and fetch its detail/log (`GET /api/jobs/{id}` and `/api/jobs/{id}/log`).
+    SelectJob {
         job_id: u64,
     },
     /// Client-side or browser navigation requested by the UI.
