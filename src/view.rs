@@ -544,9 +544,11 @@ pub struct SandboxProfileSummary {
 #[serde(rename_all = "snake_case")]
 pub enum PackageEcosystem {
     #[default]
+    #[serde(alias = "CARGO", alias = "Cargo")]
     Cargo,
-    #[serde(alias = "nuget")]
+    #[serde(alias = "nuget", alias = "NUGET", alias = "NuGet")]
     NuGet,
+    #[serde(alias = "MAVEN", alias = "Maven")]
     Maven,
 }
 
@@ -581,9 +583,13 @@ pub struct RegistryPackage {
 #[serde(rename_all = "snake_case")]
 pub enum CanaryBundleState {
     #[default]
+    #[serde(alias = "CANDIDATE", alias = "pending", alias = "staged")]
     Candidate,
+    #[serde(alias = "PROMOTED", alias = "active")]
     Promoted,
+    #[serde(alias = "TAINTED")]
     Tainted,
+    #[serde(alias = "ROLLED_BACK", alias = "ROLLED BACK")]
     RolledBack,
 }
 
@@ -713,9 +719,13 @@ pub struct PurePathTrace {
 #[serde(rename_all = "snake_case")]
 pub enum ProblemCategory {
     #[default]
+    #[serde(alias = "latency", alias = "benchmark_regression")]
     LatencyRegression,
+    #[serde(alias = "error_rate", alias = "error_spike")]
     ErrorRateSpike,
+    #[serde(alias = "flaky", alias = "test_flakiness")]
     FlakyTest,
+    #[serde(alias = "canary", alias = "taint")]
     CanaryTaint,
 }
 
@@ -750,8 +760,17 @@ pub struct SloProblem {
 #[serde(rename_all = "snake_case")]
 pub enum LogSeverity {
     #[default]
+    #[serde(
+        alias = "INFO",
+        alias = "DEBUG",
+        alias = "TRACE",
+        alias = "debug",
+        alias = "trace"
+    )]
     Info,
+    #[serde(alias = "WARN", alias = "WARNING", alias = "warning")]
     Warn,
+    #[serde(alias = "ERROR", alias = "FATAL", alias = "fatal")]
     Error,
 }
 
