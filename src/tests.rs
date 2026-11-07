@@ -182,10 +182,7 @@ fn gen_gate(r: &mut Rng) -> DeploymentGate {
 fn gen_view(r: &mut Rng) -> ViewModel {
     let repos = (0..r.len(6)).map(|_| gen_repo(r)).collect();
     let nodes = (0..r.len(3))
-        .map(|_| FabricNode {
-            id: r.name("node-", 4),
-            online: r.coin(),
-        })
+        .map(|_| FabricNode::new(r.name("node-", 4), r.coin()))
         .collect();
     ViewModel {
         source: match r.below(3) {
