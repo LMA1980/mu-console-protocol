@@ -631,38 +631,44 @@ pub struct SmartscapeNodeDto {
     pub health_state: String,
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+const fn round_nonneg_u32(v: f64) -> u32 {
+    if v <= 0.0 {
+        0
+    } else {
+        (v + 0.5) as u32
+    }
+}
+
 impl SmartscapeNodeDto {
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn effective_req_per_sec_bp(&self) -> u32 {
         if self.req_per_sec_bp > 0 {
             self.req_per_sec_bp
         } else if self.request_rate_rps > 0.0 {
-            (self.request_rate_rps * 100.0).round() as u32
+            round_nonneg_u32(self.request_rate_rps * 100.0)
         } else {
             0
         }
     }
 
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn effective_error_rate_bp(&self) -> u32 {
         if self.error_rate_bp > 0 {
             self.error_rate_bp
         } else if self.error_rate_pct > 0.0 {
-            (self.error_rate_pct * 100.0).round() as u32
+            round_nonneg_u32(self.error_rate_pct * 100.0)
         } else {
             0
         }
     }
 
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn effective_p95_ms(&self) -> u32 {
         if self.p95_ms > 0 {
             self.p95_ms
         } else if self.p95_latency_ms > 0.0 {
-            self.p95_latency_ms.round() as u32
+            round_nonneg_u32(self.p95_latency_ms)
         } else {
             0
         }
@@ -710,36 +716,33 @@ pub struct SmartscapeEdgeDto {
 
 impl SmartscapeEdgeDto {
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn effective_call_rate_rps(&self) -> u32 {
         if self.call_rate_rps > 0 {
             self.call_rate_rps
         } else if self.request_rate_rps > 0.0 {
-            self.request_rate_rps.round().max(1.0) as u32
+            round_nonneg_u32(self.request_rate_rps).max(1)
         } else {
             0
         }
     }
 
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn effective_error_rate_bp(&self) -> u32 {
         if self.error_rate_bp > 0 {
             self.error_rate_bp
         } else if self.error_rate_pct > 0.0 {
-            (self.error_rate_pct * 100.0).round() as u32
+            round_nonneg_u32(self.error_rate_pct * 100.0)
         } else {
             0
         }
     }
 
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn effective_p95_ms(&self) -> u32 {
         if self.p95_ms > 0 {
             self.p95_ms
         } else if self.p95_latency_ms > 0.0 {
-            self.p95_latency_ms.round() as u32
+            round_nonneg_u32(self.p95_latency_ms)
         } else {
             0
         }
@@ -1001,12 +1004,11 @@ impl StoreStatusDto {
     }
 
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn effective_zstd_compression_bp(&self) -> u32 {
         if self.zstd_compression_bp > 0 {
             self.zstd_compression_bp
         } else if self.estimated_compression_ratio > 0.0 {
-            (self.estimated_compression_ratio * 100.0).round() as u32
+            round_nonneg_u32(self.estimated_compression_ratio * 100.0)
         } else {
             100
         }
