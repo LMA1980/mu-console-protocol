@@ -10,8 +10,9 @@ use serde::{de::DeserializeOwned, Serialize};
 /// Protocol version carried by every frame. Bump on any breaking change.
 ///
 /// History: 1 = Phase 1 skeleton; 2 = Phase 2 data plane (full view models);
-/// 3 = Phase 3 live node telemetry & CI queue; 4 = AvionicsSkin switcher & job restart POST.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 3 = Phase 3 live node telemetry & CI queue; 4 = AvionicsSkin switcher & job restart POST;
+/// 5 = Live workflow parity (QueueItemView unwrapping, per-job detail/log, ResumeJob, submodules).
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Codec failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +139,8 @@ mod tests {
             UiCommand::SetSkin(ConsoleSkin::Wireframe),
             UiCommand::SetSkin(ConsoleSkin::Avionics),
             UiCommand::RestartJob { job_id: 101 },
+            UiCommand::ResumeJob { job_id: 102 },
+            UiCommand::SelectJob { job_id: 103 },
         ]
     }
 

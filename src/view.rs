@@ -121,11 +121,24 @@ pub fn sanitize_public_log(raw: &str) -> String {
     for token in s.split_inclusive(' ') {
         let trimmed = token.trim_end_matches(' ');
         let trail = &token[trimmed.len()..];
-        if trimmed.starts_with('/') && trimmed.matches('/').count() >= 3 {
-            let parts: Vec<&str> = trimmed.split('/').filter(|p| !p.is_empty()).collect();
+        let (lead_punct, core_tok) = match trimmed.chars().next() {
+            Some(c @ ('(' | '[' | '"' | '\'')) => {
+                (&trimmed[..c.len_utf8()], &trimmed[c.len_utf8()..])
+            }
+            _ => ("", trimmed),
+        };
+        let (core_path, tail_punct) = match core_tok.chars().last() {
+            Some(c @ (')' | ']' | '"' | '\'' | ',' | ';')) => {
+                let idx = core_tok.len() - c.len_utf8();
+                (&core_tok[..idx], &core_tok[idx..])
+            }
+            _ => (core_tok, ""),
+        };
+        if core_path.starts_with('/') && core_path.matches('/').count() >= 3 {
+            let parts: Vec<&str> = core_path.split('/').filter(|p| !p.is_empty()).collect();
             if parts.len() >= 3 {
                 out.push_str(&format!(
-                    ".../{}/{}{trail}",
+                    "{lead_punct}.../{}/{}{tail_punct}{trail}",
                     parts[parts.len() - 2],
                     parts[parts.len() - 1]
                 ));
@@ -135,6 +148,42 @@ pub fn sanitize_public_log(raw: &str) -> String {
         out.push_str(token);
     }
     out
+}
+
+/// Strip ANSI CSI escape codes (`\x1b[...m`) from a raw build log, apply
+/// [`sanitize_public_log`] to every non-empty line, and return the last
+/// `max_lines` lines.
+#[must_use]
+pub fn sanitize_ansi_log_lines(raw: &str, max_lines: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for raw_line in raw.lines() {
+        let mut stripped = String::with_capacity(raw_line.len());
+        let mut chars = raw_line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                if chars.peek() == Some(&'[') {
+                    let _ = chars.next();
+                    while let Some(&c) = chars.peek() {
+                        let _ = chars.next();
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+            } else if !ch.is_control() || ch == '\t' {
+                stripped.push(ch);
+            }
+        }
+        let trimmed = stripped.trim();
+        if !trimmed.is_empty() {
+            lines.push(sanitize_public_log(trimmed));
+        }
+    }
+    if lines.len() > max_lines {
+        let drop_n = lines.len() - max_lines;
+        lines.drain(0..drop_n);
+    }
+    lines
 }
 
 /// Overall CI state of a repository.
@@ -285,12 +334,62 @@ pub struct Station {
 #[serde(rename_all = "snake_case")]
 pub enum StageState {
     #[default]
-    #[serde(alias = "queued")]
+    #[serde(
+        alias = "queued",
+        alias = "Queued",
+        alias = "Pending",
+        alias = "PENDING"
+    )]
     Pending,
+    #[serde(alias = "Running", alias = "RUNNING", alias = "in_progress")]
     Running,
+    #[serde(
+        alias = "completed",
+        alias = "Completed",
+        alias = "Passed",
+        alias = "PASSED"
+    )]
     Passed,
+    #[serde(
+        alias = "Failed",
+        alias = "FAILED",
+        alias = "cancelled",
+        alias = "Cancelled"
+    )]
     Failed,
+    #[serde(alias = "Skipped", alias = "SKIPPED")]
     Skipped,
+}
+
+impl StageState {
+    /// Parse a stage state string (`"Completed"`, `"Passed"`, `"Failed"`, `"Running"`, `"Queued"`, `"Pending"`, `"Skipped"`).
+    #[must_use]
+    pub fn from_status_str(s: &str, exit_code: i32) -> Self {
+        if s.eq_ignore_ascii_case("failed") || s.eq_ignore_ascii_case("cancelled") || exit_code != 0
+        {
+            Self::Failed
+        } else if s.eq_ignore_ascii_case("completed") || s.eq_ignore_ascii_case("passed") {
+            Self::Passed
+        } else if s.eq_ignore_ascii_case("running") || s.eq_ignore_ascii_case("in_progress") {
+            Self::Running
+        } else if s.eq_ignore_ascii_case("skipped") {
+            Self::Skipped
+        } else {
+            Self::Pending
+        }
+    }
+
+    /// Short uppercase label for tables and logs.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Running => "RUNNING",
+            Self::Passed => "PASSED",
+            Self::Failed => "FAILED",
+            Self::Skipped => "SKIPPED",
+        }
+    }
 }
 
 /// Pull-request state of a branch.
@@ -957,6 +1056,43 @@ impl AuthState {
     }
 }
 
+/// One pipeline stage execution record within a [`CiJobSummary`] (`CI > Queue & Logs` and `FLT > Worker Nodes`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CiJobStage {
+    pub id: String,
+    pub name: String,
+    pub assigned_node: Option<String>,
+    pub threads: u32,
+    pub state: StageState,
+    pub duration_secs: u64,
+    pub exit_code: i32,
+}
+
+/// Queue or recent CI job record with full string `job_id`, per-stage breakdown, and raw build log lines.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CiJobSummary {
+    /// Canonical string job ID on `ActionRunner-controller` (e.g. `"job-1794054497-8c395767"`).
+    pub job_id_str: String,
+    /// Packed `u64` job ID matching [`Train::job_id`].
+    pub job_id: u64,
+    pub repo: RepoId,
+    pub ref_name: String,
+    pub commit_sha: String,
+    /// `"active"`, `"queued"`, `"passed"`, `"failed"`.
+    pub queue_state: String,
+    pub elapsed_secs: u64,
+    pub wait_secs: u64,
+    pub quality_score: u32,
+    pub coverage_bp: u32,
+    pub tests_passed: u32,
+    pub tests_total: u32,
+    pub benchmark_summary: String,
+    pub stages: Vec<CiJobStage>,
+    /// Sanitized raw log lines fetched from `GET /api/jobs/{id}/log` (empty until loaded).
+    #[serde(default)]
+    pub raw_log_lines: Vec<String>,
+}
+
 /// Full view model snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ViewModel {
@@ -989,6 +1125,9 @@ pub struct ViewModel {
     /// Operator authentication state.
     #[serde(default)]
     pub auth: AuthState,
+    /// Active, queued, and recent CI job records (`CI > Queue & Logs` and `FLT > Worker Nodes`).
+    #[serde(default)]
+    pub ci_jobs: Vec<CiJobSummary>,
 }
 
 /// Incremental change to the view model.
@@ -1024,6 +1163,7 @@ pub enum Delta {
     Observe(ObserveView),
     Stale(Option<u64>),
     Auth(AuthState),
+    CiJobs(Vec<CiJobSummary>),
 }
 
 fn upsert_sorted<T, K: Ord + ?Sized>(v: &mut Vec<T>, item: T, key: impl Fn(&T) -> &K) {
@@ -1058,6 +1198,7 @@ pub fn apply(vm: &mut ViewModel, delta: &Delta) {
         Delta::Observe(o) => vm.observe = o.clone(),
         Delta::Stale(s) => vm.stale_since_epoch_ms = *s,
         Delta::Auth(a) => vm.auth = a.clone(),
+        Delta::CiJobs(j) => vm.ci_jobs = j.clone(),
         Delta::FabricRev(_)
         | Delta::SubmoduleBumpPending(_)
         | Delta::BranchUpsert(_)
@@ -1213,6 +1354,9 @@ pub fn diff(old: &ViewModel, new: &ViewModel) -> Vec<Delta> {
     }
     if old.auth != new.auth {
         out.push(Delta::Auth(new.auth.clone()));
+    }
+    if old.ci_jobs != new.ci_jobs {
+        out.push(Delta::CiJobs(new.ci_jobs.clone()));
     }
     out
 }

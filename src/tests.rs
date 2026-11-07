@@ -214,6 +214,7 @@ fn gen_view(r: &mut Rng) -> ViewModel {
                 role: r.coin().then(|| "operator".into()),
             },
         },
+        ci_jobs: Vec::new(),
     }
 }
 
@@ -477,8 +478,83 @@ fn auth_state_and_commands_round_trip_through_postcard() {
             role: Some("operator".into()),
         }),
         UiCommand::RestartJob { job_id: 42 },
+        UiCommand::ResumeJob { job_id: 42 },
+        UiCommand::SelectJob { job_id: 42 },
     ] {
         let bytes = encode(&cmd).expect("encode cmd");
         assert_eq!(decode::<UiCommand>(&bytes), Ok(cmd));
     }
+}
+
+#[test]
+fn queue_item_view_unwrapping_ansi_log_sanitization_and_paths() {
+    use crate::dto::{
+        paths, CiQueueJobInnerDto, CiQueueJobRecordDto, CiQueueJobSpecDto, CiQueueStageDetailsDto,
+        CiQueueStageDto, CiQueueStageStatusDto,
+    };
+
+    let wrapped = CiQueueJobRecordDto {
+        elapsed_secs: 26,
+        wait_secs: 3,
+        position: 0,
+        record: Some(CiQueueJobInnerDto {
+            job: CiQueueJobSpecDto {
+                id: "job-1794054805-5cec9056".into(),
+                repo_name: "LMA1980/mu-console".into(),
+                ref_name: "refs/heads/main".into(),
+                commit_sha: "5cec90567890".into(),
+                event_type: "push".into(),
+                queued_at: "2026-11-07T12:00:00Z".into(),
+            },
+            metrics: None,
+            stages: alloc::vec![CiQueueStageDto {
+                id: "fmt-check".into(),
+                name: "Verify Rust Formatting".into(),
+                assigned_node: Some("worker-riscv64".into()),
+                threads: 6,
+                status: CiQueueStageStatusDto {
+                    state: "Completed".into(),
+                    details: CiQueueStageDetailsDto {
+                        duration_secs: 4,
+                        exit_code: 0,
+                    },
+                },
+            }],
+        }),
+        ..CiQueueJobRecordDto::default()
+    };
+    let rec = wrapped.into_unwrapped();
+    assert_eq!(rec.job.id, "job-1794054805-5cec9056");
+    assert_eq!(rec.elapsed_secs, 26);
+    assert_eq!(rec.wait_secs, 3);
+    assert_eq!(rec.stages.len(), 1);
+    assert_eq!(
+        StageState::from_status_str(&rec.stages[0].status.state, 0),
+        StageState::Passed
+    );
+    assert_eq!(StageState::Passed.label(), "PASSED");
+
+    let ansi = "\x1b[32m   Compiling\x1b[0m mu-console v0.1.0 (/var/lib/action-runner/work/mu-console)\n\x1b[1;31merror\x1b[0m: failed on 192.0.2.15\n";
+    let lines = sanitize_ansi_log_lines(ansi, 10);
+    assert_eq!(lines.len(), 2);
+    assert!(!lines[0].contains("\x1b"));
+    assert!(lines[0].contains(".../work/mu-console"));
+    assert!(lines[1].contains("192.0.###.15"));
+
+    assert_eq!(
+        paths::job_restart_id("job-1794054805-5cec9056"),
+        "/api/jobs/job-1794054805-5cec9056/restart"
+    );
+    assert_eq!(
+        paths::job_resume_id("job-1794054805-5cec9056"),
+        "/api/jobs/job-1794054805-5cec9056/resume"
+    );
+    assert_eq!(
+        paths::job_detail_id("job-1794054805-5cec9056"),
+        "/api/jobs/job-1794054805-5cec9056"
+    );
+    assert_eq!(
+        paths::job_log_id("job-1794054805-5cec9056"),
+        "/api/jobs/job-1794054805-5cec9056/log"
+    );
 }
