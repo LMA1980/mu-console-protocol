@@ -9,8 +9,9 @@ use serde::{de::DeserializeOwned, Serialize};
 
 /// Protocol version carried by every frame. Bump on any breaking change.
 ///
-/// History: 1 = Phase 1 skeleton; 2 = Phase 2 data plane (full view models).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// History: 1 = Phase 1 skeleton; 2 = Phase 2 data plane (full view models);
+/// 3 = Phase 3 live node telemetry & CI queue.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Codec failure.
 #[derive(Debug, Clone, PartialEq, Eq)]

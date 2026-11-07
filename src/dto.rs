@@ -1033,6 +1033,121 @@ pub struct ClusterNodeDto {
     pub ram_used_mb: u64,
     #[serde(default)]
     pub ram_total_mb: u64,
+    #[serde(default)]
+    pub btrfs_enabled: bool,
+    #[serde(default)]
+    pub exclusive_locked: bool,
+    #[serde(default)]
+    pub last_seen_secs_ago: u64,
+    #[serde(default, deserialize_with = "null_default")]
+    pub tags: Vec<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub toolchains: Vec<String>,
+}
+
+impl ClusterNodeDto {
+    /// Convert `cpu_load_pct` (`0.0..=100.0`) to basis points (`0..=10_000`).
+    #[must_use]
+    pub fn cpu_load_bp(&self) -> u32 {
+        round_nonneg_u32(self.cpu_load_pct * 100.0).min(10_000)
+    }
+}
+
+/// `job` nested object inside [`CiQueueJobRecordDto`] (`GET /api/queue`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CiQueueJobSpecDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub repo_name: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub ref_name: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub commit_sha: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub event_type: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub queued_at: String,
+}
+
+/// `metrics` nested object inside [`CiQueueJobRecordDto`] (`GET /api/queue`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiQueueMetricsDto {
+    #[serde(default)]
+    pub quality_score: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub letter_grade: String,
+    #[serde(default)]
+    pub coverage_pct: f64,
+    #[serde(default)]
+    pub tests_passed: u32,
+    #[serde(default)]
+    pub tests_total: u32,
+    #[serde(default)]
+    pub clippy_warnings: u32,
+    #[serde(default)]
+    pub advisories_count: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub benchmark_summary: String,
+}
+
+/// `status.details` nested object inside [`CiQueueStageStatusDto`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CiQueueStageDetailsDto {
+    #[serde(default)]
+    pub duration_secs: u64,
+    #[serde(default)]
+    pub exit_code: i32,
+}
+
+/// `status` nested object inside [`CiQueueStageDto`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CiQueueStageStatusDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub state: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub details: CiQueueStageDetailsDto,
+}
+
+/// `stages[]` entry inside [`CiQueueJobRecordDto`] (`GET /api/queue`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CiQueueStageDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub name: String,
+    #[serde(default)]
+    pub assigned_node: Option<String>,
+    #[serde(default)]
+    pub threads: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub status: CiQueueStageStatusDto,
+}
+
+/// One job record inside `active_jobs`, `queued_jobs`, or `recent_jobs` of `GET /api/queue`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiQueueJobRecordDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub job: CiQueueJobSpecDto,
+    #[serde(default)]
+    pub metrics: Option<CiQueueMetricsDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub stages: Vec<CiQueueStageDto>,
+}
+
+/// `GET /api/queue` response (`ActionRunner-controller`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiQueueDto {
+    #[serde(default)]
+    pub queue_depth: u32,
+    #[serde(default)]
+    pub concurrency: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub active_jobs: Vec<CiQueueJobRecordDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub queued_jobs: Vec<CiQueueJobRecordDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub recent_jobs: Vec<CiQueueJobRecordDto>,
 }
 
 /// `GET /api/auth/session` and `POST /api/auth/redeem` response (`ActionRunner-controller`).
@@ -1061,6 +1176,8 @@ pub mod paths {
     pub const REPOS: &str = "/api/repos";
     /// Cluster fabric worker nodes (`ActionRunner-controller`).
     pub const CLUSTER_NODES: &str = "/api/cluster/nodes";
+    /// Cluster-wide CI job queue & recent execution records (`ActionRunner-controller`).
+    pub const CI_QUEUE: &str = "/api/queue";
     /// Active CD deployment leases.
     pub const LEASES: &str = "/api/cd/leases";
     /// Operator authentication session probe.

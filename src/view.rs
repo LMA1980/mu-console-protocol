@@ -520,10 +520,46 @@ pub struct CdLease {
 }
 
 /// Fabric worker node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FabricNode {
     pub id: String,
     pub online: bool,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub active_slots: u32,
+    #[serde(default)]
+    pub max_slots: u32,
+    /// CPU load in basis points (`320` = `3.20%`).
+    #[serde(default)]
+    pub cpu_load_bp: u32,
+    #[serde(default)]
+    pub ram_used_mb: u64,
+    #[serde(default)]
+    pub ram_total_mb: u64,
+    #[serde(default)]
+    pub btrfs_enabled: bool,
+    #[serde(default)]
+    pub exclusive_locked: bool,
+    #[serde(default)]
+    pub last_seen_secs_ago: u64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub toolchains: Vec<String>,
+}
+
+impl FabricNode {
+    /// Construct a node with minimal `id` + `online` state (`max_slots = 1`).
+    #[must_use]
+    pub fn new(id: impl Into<String>, online: bool) -> Self {
+        Self {
+            id: id.into(),
+            online,
+            max_slots: 1,
+            ..Self::default()
+        }
+    }
 }
 
 /// Declarative `MuIsolation` sandbox profile (`FLT > Sandbox Profiles`).
