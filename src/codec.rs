@@ -10,8 +10,8 @@ use serde::{de::DeserializeOwned, Serialize};
 /// Protocol version carried by every frame. Bump on any breaking change.
 ///
 /// History: 1 = Phase 1 skeleton; 2 = Phase 2 data plane (full view models);
-/// 3 = Phase 3 live node telemetry & CI queue.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 3 = Phase 3 live node telemetry & CI queue; 4 = AvionicsSkin switcher & job restart POST.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Codec failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +135,9 @@ mod tests {
             UiCommand::SetVisibility { hidden: true },
             UiCommand::SetCrtFont(CrtFont::Hurmit),
             UiCommand::SetCrtFont(CrtFont::OpenDyslexic),
+            UiCommand::SetSkin(ConsoleSkin::Wireframe),
+            UiCommand::SetSkin(ConsoleSkin::Avionics),
+            UiCommand::RestartJob { job_id: 101 },
         ]
     }
 

@@ -326,6 +326,17 @@ pub enum CrtFont {
     OpenDyslexic,
 }
 
+/// Visual skin (`Wireframe` flat high-contrast vs. `Avionics` tactile skeuomorphic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsoleSkin {
+    /// Flat high-contrast technical wireframe (default).
+    #[default]
+    Wireframe,
+    /// Tactile control-room / avionics skin (wood veneer, brushed tungsten, domed lamps, STN LCD, phosphor CRT).
+    Avionics,
+}
+
 /// Panels that support panel-local paging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PanelId {
@@ -366,6 +377,8 @@ pub enum UiCommand {
         hidden: bool,
     },
     SetCrtFont(CrtFont),
+    /// Switch active visual skin (`Wireframe` vs. `Avionics`).
+    SetSkin(ConsoleSkin),
     /// Redeem a one-time operator invite token (`POST /api/auth/redeem`).
     RedeemInvite {
         token: String,

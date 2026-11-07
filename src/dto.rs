@@ -1234,4 +1234,10 @@ pub mod paths {
     pub fn obs_trace(trace_id: &str) -> String {
         format!("/api/obs/v1/traces/{trace_id}")
     }
+
+    /// `/api/jobs/{job_id}/restart` (`POST` on `ActionRunner-controller`).
+    #[must_use]
+    pub fn job_restart(job_id: u64) -> String {
+        format!("/api/jobs/{job_id}/restart")
+    }
 }
