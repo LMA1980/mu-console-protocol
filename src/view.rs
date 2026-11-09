@@ -150,6 +150,9 @@ pub fn sanitize_public_log(raw: &str) -> String {
     out
 }
 
+/// Default maximum number of sanitized build log lines retained per CI job.
+pub const DEFAULT_MAX_JOB_LOG_LINES: usize = 2_000;
+
 /// Strip ANSI CSI escape codes (`\x1b[...m`) from a raw build log, apply
 /// [`sanitize_public_log`] to every non-empty line, and return the last
 /// `max_lines` lines.

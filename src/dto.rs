@@ -1143,6 +1143,8 @@ pub struct CiQueueStageDto {
 pub struct CiQueueJobInnerDto {
     #[serde(default, deserialize_with = "null_default")]
     pub job: CiQueueJobSpecDto,
+    #[serde(default, deserialize_with = "null_default")]
+    pub status: CiQueueStageStatusDto,
     #[serde(default)]
     pub metrics: Option<CiQueueMetricsDto>,
     #[serde(default, deserialize_with = "null_default")]
@@ -1155,6 +1157,8 @@ pub struct CiQueueJobInnerDto {
 pub struct CiQueueJobRecordDto {
     #[serde(default, deserialize_with = "null_default")]
     pub job: CiQueueJobSpecDto,
+    #[serde(default, deserialize_with = "null_default")]
+    pub status: CiQueueStageStatusDto,
     #[serde(default)]
     pub metrics: Option<CiQueueMetricsDto>,
     #[serde(default, deserialize_with = "null_default")]
@@ -1176,6 +1180,9 @@ impl CiQueueJobRecordDto {
         if let Some(inner) = self.record.take() {
             if self.job.id.is_empty() {
                 self.job = inner.job;
+            }
+            if self.status.state.is_empty() {
+                self.status = inner.status;
             }
             if self.metrics.is_none() {
                 self.metrics = inner.metrics;
@@ -1316,5 +1323,11 @@ pub mod paths {
     #[must_use]
     pub fn job_log_id(job_id: &str) -> String {
         format!("/api/jobs/{job_id}/log")
+    }
+
+    /// `/api/obs/v1/jobs/{job_id}/log` (`GET` sanitized public build log text).
+    #[must_use]
+    pub fn job_obs_log_id(job_id: &str) -> String {
+        format!("/api/obs/v1/jobs/{job_id}/log")
     }
 }
