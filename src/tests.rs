@@ -506,6 +506,10 @@ fn queue_item_view_unwrapping_ansi_log_sanitization_and_paths() {
                 event_type: "push".into(),
                 queued_at: "2026-11-07T12:00:00Z".into(),
             },
+            status: CiQueueStageStatusDto {
+                state: "Running".into(),
+                details: CiQueueStageDetailsDto::default(),
+            },
             metrics: None,
             stages: alloc::vec![CiQueueStageDto {
                 id: "fmt-check".into(),
@@ -525,6 +529,7 @@ fn queue_item_view_unwrapping_ansi_log_sanitization_and_paths() {
     };
     let rec = wrapped.into_unwrapped();
     assert_eq!(rec.job.id, "job-1794054805-5cec9056");
+    assert_eq!(rec.status.state, "Running");
     assert_eq!(rec.elapsed_secs, 26);
     assert_eq!(rec.wait_secs, 3);
     assert_eq!(rec.stages.len(), 1);
@@ -557,4 +562,9 @@ fn queue_item_view_unwrapping_ansi_log_sanitization_and_paths() {
         paths::job_log_id("job-1794054805-5cec9056"),
         "/api/jobs/job-1794054805-5cec9056/log"
     );
+    assert_eq!(
+        paths::job_obs_log_id("job-1794054805-5cec9056"),
+        "/api/obs/v1/jobs/job-1794054805-5cec9056/log"
+    );
+    assert_eq!(DEFAULT_MAX_JOB_LOG_LINES, 2_000);
 }
