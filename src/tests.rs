@@ -568,3 +568,100 @@ fn queue_item_view_unwrapping_ansi_log_sanitization_and_paths() {
     );
     assert_eq!(DEFAULT_MAX_JOB_LOG_LINES, 2_000);
 }
+
+#[test]
+fn raw_metric_points_aggregate_into_series_alongside_preaggregated_rows() {
+    use crate::dto::{MetricSeriesDto, RawMetricPointDto};
+
+    let raw_points = alloc::vec![
+        RawMetricPointDto {
+            timestamp_ns: 1_700_000_002_000_000_000,
+            service: "muobserve-collector".into(),
+            node_id: "worker-riscv64".into(),
+            metric_name: "host.psi.memory.some_avg60".into(),
+            metric_unit: "%".into(),
+            value_f64: 0.42,
+            arch: "riscv64".into(),
+            cpu_cluster: "X100".into(),
+            vlen_bits: 256,
+            ..RawMetricPointDto::default()
+        },
+        RawMetricPointDto {
+            timestamp_ns: 1_700_000_001_000_000_000,
+            service: "muobserve-collector".into(),
+            node_id: "worker-riscv64".into(),
+            metric_name: "host.psi.memory.some_avg60".into(),
+            metric_unit: "%".into(),
+            value_f64: 0.18,
+            arch: "riscv64".into(),
+            cpu_cluster: "X100".into(),
+            vlen_bits: 256,
+            ..RawMetricPointDto::default()
+        },
+        RawMetricPointDto {
+            timestamp_ns: 1_700_000_003_000_000_000,
+            service: "muobserve-collector".into(),
+            node_id: "node-a".into(),
+            metric_name: "host.load1".into(),
+            metric_unit: String::new(),
+            value_f64: 1.75,
+            arch: "x86_64".into(),
+            cpu_cluster: "unknown".into(),
+            vlen_bits: 0,
+            ..RawMetricPointDto::default()
+        },
+        RawMetricPointDto {
+            service: "k3-kernels-rvv".into(),
+            hardware_class: "Cluster 1 A100 (VLEN=1024)".into(),
+            rps: 118,
+            error_rate_bp: 0,
+            p50_ms: 11,
+            p95_ms: 14,
+            p99_ms: 17,
+            exemplar_trace_id: "tr-obs-p99-07".into(),
+            samples: alloc::vec![11, 14, 17],
+            ..RawMetricPointDto::default()
+        },
+    ];
+
+    let series = RawMetricPointDto::aggregate_into_series(&raw_points);
+    assert_eq!(series.len(), 3);
+
+    // Pre-aggregated series is preserved first.
+    assert_eq!(
+        series[0],
+        MetricSeriesDto {
+            service: "k3-kernels-rvv".into(),
+            hardware_class: "Cluster 1 A100 (VLEN=1024)".into(),
+            rps: 118,
+            error_rate_bp: 0,
+            p50_ms: 11,
+            p95_ms: 14,
+            p99_ms: 17,
+            exemplar_trace_id: "tr-obs-p99-07".into(),
+            samples: alloc::vec![11, 14, 17],
+        }
+    );
+
+    // Raw points for host.psi.memory.some_avg60 sorted by timestamp_ns and scaled by 100.
+    assert_eq!(
+        series[1].service,
+        "muobserve-collector · host.psi.memory.some_avg60 (%)"
+    );
+    assert_eq!(
+        series[1].hardware_class,
+        "worker-riscv64 · riscv64 · X100 · rvv-256"
+    );
+    assert_eq!(series[1].rps, 2);
+    assert_eq!(series[1].samples, alloc::vec![18, 42]);
+    assert_eq!(series[1].p50_ms, 42);
+    assert_eq!(series[1].p95_ms, 42);
+    assert_eq!(series[1].p99_ms, 42);
+
+    // Raw points for host.load1 with unknown cpu_cluster omitted.
+    assert_eq!(series[2].service, "muobserve-collector · host.load1");
+    assert_eq!(series[2].hardware_class, "node-a · x86_64");
+    assert_eq!(series[2].rps, 1);
+    assert_eq!(series[2].samples, alloc::vec![175]);
+    assert_eq!(series[2].p50_ms, 175);
+}
