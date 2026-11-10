@@ -959,6 +959,215 @@ pub struct MetricSeriesDto {
     pub samples: Vec<u32>,
 }
 
+const fn abs_f64(v: f64) -> f64 {
+    if v < 0.0 {
+        -v
+    } else {
+        v
+    }
+}
+
+/// Raw metric point or pre-aggregated series item from `GET /api/obs/v1/metrics/timeseries`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RawMetricPointDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub timestamp_ns: u64,
+    #[serde(default, deserialize_with = "null_default")]
+    pub service: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub node_id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub metric_name: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub metric_unit: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub value_f64: f64,
+    #[serde(default, deserialize_with = "null_default")]
+    pub arch: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub cpu_cluster: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub vlen_bits: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub hardware_class: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub rps: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub error_rate_bp: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub p50_ms: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub p95_ms: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub p99_ms: u32,
+    #[serde(default, deserialize_with = "null_default")]
+    pub exemplar_trace_id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub samples: Vec<u32>,
+}
+
+impl RawMetricPointDto {
+    /// Whether this item represents a raw OTel metric point rather than a pre-aggregated series.
+    #[must_use]
+    pub fn is_raw_point(&self) -> bool {
+        !self.metric_name.is_empty()
+            || (self.hardware_class.is_empty()
+                && self.samples.is_empty()
+                && (!self.node_id.is_empty() || !self.arch.is_empty() || self.value_f64 != 0.0))
+    }
+
+    /// Aggregate a slice of raw metric points and/or pre-aggregated series into [`MetricSeriesDto`] rows.
+    #[must_use]
+    pub fn aggregate_into_series(points: &[Self]) -> Vec<MetricSeriesDto> {
+        type GroupKey<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str, u32);
+        let mut out = Vec::new();
+        let mut groups: Vec<(GroupKey<'_>, Vec<&Self>)> = Vec::new();
+
+        for item in points {
+            if !item.is_raw_point()
+                && (!item.hardware_class.is_empty()
+                    || !item.samples.is_empty()
+                    || item.p50_ms > 0
+                    || item.p95_ms > 0
+                    || item.p99_ms > 0
+                    || item.rps > 0)
+            {
+                out.push(MetricSeriesDto {
+                    service: item.service.clone(),
+                    hardware_class: item.hardware_class.clone(),
+                    rps: item.rps,
+                    error_rate_bp: item.error_rate_bp,
+                    p50_ms: item.p50_ms,
+                    p95_ms: item.p95_ms,
+                    p99_ms: item.p99_ms,
+                    exemplar_trace_id: item.exemplar_trace_id.clone(),
+                    samples: item.samples.clone(),
+                });
+                continue;
+            }
+            if !item.is_raw_point() {
+                continue;
+            }
+            let key: GroupKey<'_> = (
+                item.service.as_str(),
+                item.metric_name.as_str(),
+                item.metric_unit.as_str(),
+                item.node_id.as_str(),
+                item.arch.as_str(),
+                item.cpu_cluster.as_str(),
+                item.vlen_bits,
+            );
+            if let Some((_, bucket)) = groups.iter_mut().find(|(k, _)| *k == key) {
+                bucket.push(item);
+            } else {
+                groups.push((key, alloc::vec![item]));
+            }
+        }
+
+        for (key, mut group_points) in groups {
+            if group_points.iter().any(|p| p.timestamp_ns > 0) {
+                group_points.sort_by_key(|p| p.timestamp_ns);
+            }
+            let (svc, m_name, m_unit, node_id, arch, cpu_cluster, vlen_bits) = key;
+            let service = match (svc.is_empty(), m_name.is_empty(), m_unit.is_empty()) {
+                (true, true, _) => String::from("telemetry"),
+                (true, false, true) => String::from(m_name),
+                (true, false, false) => format!("{m_name} ({m_unit})"),
+                (false, true, _) => String::from(svc),
+                (false, false, true) => format!("{svc} · {m_name}"),
+                (false, false, false) => format!("{svc} · {m_name} ({m_unit})"),
+            };
+
+            let mut hw_parts: Vec<String> = Vec::new();
+            if !node_id.is_empty() {
+                hw_parts.push(String::from(node_id));
+            }
+            if !arch.is_empty() {
+                hw_parts.push(String::from(arch));
+            }
+            if !cpu_cluster.is_empty() && !cpu_cluster.eq_ignore_ascii_case("unknown") {
+                hw_parts.push(String::from(cpu_cluster));
+            }
+            if vlen_bits > 0 {
+                hw_parts.push(format!("rvv-{vlen_bits}"));
+            }
+            let hardware_class = if hw_parts.is_empty() {
+                String::from("cluster")
+            } else {
+                hw_parts.join(" · ")
+            };
+
+            let max_val = group_points.iter().fold(0.0_f64, |acc, p| {
+                let v = if p.value_f64.is_nan() {
+                    0.0
+                } else {
+                    abs_f64(p.value_f64)
+                };
+                if v > acc {
+                    v
+                } else {
+                    acc
+                }
+            });
+            let scale_100 = max_val > 0.0 && max_val < 10.0;
+            let total_points = group_points.len();
+            let tail_start = total_points.saturating_sub(24);
+            let samples: Vec<u32> = group_points[tail_start..]
+                .iter()
+                .map(|p| {
+                    let v = if p.value_f64.is_nan() {
+                        0.0
+                    } else {
+                        abs_f64(p.value_f64)
+                    };
+                    if scale_100 {
+                        round_nonneg_u32(v * 100.0)
+                    } else {
+                        round_nonneg_u32(v)
+                    }
+                })
+                .collect();
+
+            let rps = u32::try_from(total_points).unwrap_or(u32::MAX);
+            let mut sorted = samples.clone();
+            sorted.sort_unstable();
+            let (p50_ms, p95_ms, p99_ms) = if sorted.is_empty() {
+                (0, 0, 0)
+            } else {
+                let len = sorted.len();
+                let p50 = sorted[len / 2];
+                let p95 = sorted[(len * 95 / 100).min(len - 1)];
+                let p99 = sorted[(len * 99 / 100).min(len - 1)];
+                (p50, p95, p99)
+            };
+            let error_rate_bp = group_points
+                .iter()
+                .map(|p| p.error_rate_bp)
+                .max()
+                .unwrap_or(0);
+            let exemplar_trace_id = group_points
+                .iter()
+                .find(|p| !p.exemplar_trace_id.is_empty())
+                .map_or_else(String::new, |p| p.exemplar_trace_id.clone());
+
+            out.push(MetricSeriesDto {
+                service,
+                hardware_class,
+                rps,
+                error_rate_bp,
+                p50_ms,
+                p95_ms,
+                p99_ms,
+                exemplar_trace_id,
+                samples,
+            });
+        }
+
+        out
+    }
+}
+
 /// `GET /api/obs/v1/store/status`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct StoreStatusDto {
