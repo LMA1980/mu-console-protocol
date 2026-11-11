@@ -739,3 +739,69 @@ fn test_ingress_subview_dtos_and_paths() {
     assert_eq!(tls, tls.clone());
     assert_eq!(overview, overview.clone());
 }
+
+#[test]
+fn test_obs_logs_query_encoding() {
+    let q = "service:checkout & error*";
+    let path = crate::dto::paths::obs_logs_query(q, 100);
+    assert_eq!(
+        path,
+        "/api/obs/v1/logs?q=service%3Acheckout%20%26%20error%2A&limit=100"
+    );
+}
+
+#[test]
+fn test_causal_rca_problem_dto_and_slo_problem() {
+    let dto = crate::dto::ProblemDto {
+        problem_id: "PROB-001".into(),
+        title: "Latency regression in order-svc".into(),
+        category: ProblemCategory::LatencyRegression,
+        severity: "critical".into(),
+        burn_rate_bp: 450,
+        impacted_entity: "order-svc".into(),
+        root_cause_trace_id: "trace-xyz".into(),
+        active: true,
+        status: "active".into(),
+        causal_chain: alloc::vec![
+            "api-gateway".into(),
+            "order-svc".into(),
+            "payment-db".into()
+        ],
+        confidence_score: 0.94,
+        root_cause_service: "payment-db".into(),
+        root_cause_span_id: Some("span-123".into()),
+        root_cause_error_message: Some("Connection pool exhausted".into()),
+        summary: "Database pool exhausted causing 500x latency spike".into(),
+        affected_services: alloc::vec!["order-svc".into(), "checkout-svc".into()],
+        ai_diagnosis: Some("Root-cause analysis isolated payment-db connection timeout.".into()),
+    };
+
+    assert_eq!(dto.root_cause_service, "payment-db");
+    assert_eq!(dto.confidence_score, 0.94);
+    assert_eq!(dto.causal_chain.len(), 3);
+
+    let view = SloProblem {
+        problem_id: dto.problem_id.clone(),
+        title: dto.title.clone(),
+        category: dto.category,
+        severity: dto.severity.clone(),
+        burn_rate_bp: dto.burn_rate_bp,
+        impacted_entity: dto.impacted_entity.clone(),
+        root_cause_trace_id: dto.root_cause_trace_id.clone(),
+        active: dto.active,
+        causal_chain: dto.causal_chain.clone(),
+        confidence_score: (dto.confidence_score * 100.0).round() as u32,
+        root_cause_service: dto.root_cause_service.clone(),
+        root_cause_span_id: dto.root_cause_span_id.clone(),
+        root_cause_error_message: dto.root_cause_error_message.clone(),
+        summary: dto.summary.clone(),
+        affected_services: dto.affected_services.clone(),
+        ai_diagnosis: dto.ai_diagnosis.clone(),
+    };
+    assert_eq!(view.confidence_score, 94);
+    assert_eq!(view.root_cause_service, "payment-db");
+
+    let serialized = postcard::to_allocvec(&view).expect("serialize view");
+    let deserialized: SloProblem = postcard::from_bytes(&serialized).expect("deserialize view");
+    assert_eq!(deserialized, view);
+}
