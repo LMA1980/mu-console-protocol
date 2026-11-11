@@ -880,7 +880,7 @@ impl ProblemCategory {
 }
 
 /// Causal anomaly / SLO breach card (`OBS > Problems & SLOs`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SloProblem {
     pub problem_id: String,
     pub title: String,
@@ -891,6 +891,22 @@ pub struct SloProblem {
     pub impacted_entity: String,
     pub root_cause_trace_id: String,
     pub active: bool,
+    #[serde(default)]
+    pub causal_chain: Vec<String>,
+    #[serde(default)]
+    pub confidence_score: u32,
+    #[serde(default)]
+    pub root_cause_service: String,
+    #[serde(default)]
+    pub root_cause_span_id: Option<String>,
+    #[serde(default)]
+    pub root_cause_error_message: Option<String>,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub affected_services: Vec<String>,
+    #[serde(default)]
+    pub ai_diagnosis: Option<String>,
 }
 
 /// Log severity level (`OBS > Logs`).

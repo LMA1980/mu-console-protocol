@@ -887,7 +887,7 @@ impl TraceDto {
 }
 
 /// `GET /api/obs/v1/problems`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ProblemDto {
     pub problem_id: String,
     pub title: String,
@@ -905,6 +905,22 @@ pub struct ProblemDto {
     pub active: bool,
     #[serde(default, deserialize_with = "null_default")]
     pub status: String,
+    #[serde(default)]
+    pub causal_chain: Vec<String>,
+    #[serde(default)]
+    pub confidence_score: f64,
+    #[serde(default, deserialize_with = "null_default")]
+    pub root_cause_service: String,
+    #[serde(default)]
+    pub root_cause_span_id: Option<String>,
+    #[serde(default)]
+    pub root_cause_error_message: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub summary: String,
+    #[serde(default)]
+    pub affected_services: Vec<String>,
+    #[serde(default)]
+    pub ai_diagnosis: Option<String>,
 }
 
 impl ProblemDto {
@@ -1557,10 +1573,27 @@ pub mod paths {
     /// Observe ingress upstreams health (`MuObserve`).
     pub const OBS_INGRESS_UPSTREAMS: &str = "/api/obs/v1/ingress/upstreams";
 
-    /// `/api/obs/v1/logs?q={q}&limit={limit}`.
+    fn percent_encode_query(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        for b in input.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                out.push(b as char);
+            } else {
+                use core::fmt::Write;
+                let _ = write!(out, "%{:02X}", b);
+            }
+        }
+        out
+    }
+
+    /// `/api/obs/v1/logs?q={q}&limit={limit}` with RFC 3986 percent-encoding.
     #[must_use]
     pub fn obs_logs_query(q: &str, limit: usize) -> String {
-        format!("/api/obs/v1/logs?q={}&limit={}", q, limit)
+        format!(
+            "/api/obs/v1/logs?q={}&limit={}",
+            percent_encode_query(q),
+            limit
+        )
     }
 
     /// `/api/repos/{owner}/{repo}/summary`.
