@@ -1432,6 +1432,81 @@ pub struct AuthSessionDto {
     pub role: Option<String>,
 }
 
+/// Dynamic reverse-proxy route definition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IngressRouteDto {
+    pub route_id: String,
+    pub path_prefix: String,
+    pub upstream_url: String,
+    #[serde(default)]
+    pub service_name: String,
+    #[serde(default)]
+    pub strip_prefix: bool,
+    #[serde(default)]
+    pub auth_required: bool,
+    #[serde(default)]
+    pub request_count: u64,
+    #[serde(default)]
+    pub request_rate_rps: f64,
+    #[serde(default)]
+    pub error_rate_pct: f64,
+    #[serde(default)]
+    pub p95_latency_ms: f64,
+}
+
+impl Eq for IngressRouteDto {}
+
+/// Upstream target host and health telemetry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IngressUpstreamDto {
+    pub upstream_id: String,
+    pub target_url: String,
+    #[serde(default)]
+    pub service_name: String,
+    #[serde(default)]
+    pub health_state: String, // "HEALTHY", "DEGRADED", "UNHEALTHY"
+    #[serde(default)]
+    pub latency_ms: f64,
+    #[serde(default)]
+    pub success_rate_pct: f64,
+    #[serde(default)]
+    pub active_connections: u32,
+    #[serde(default)]
+    pub last_check_ms: i64,
+}
+
+impl Eq for IngressUpstreamDto {}
+
+/// TLS termination and certificate health status.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TlsHealthDto {
+    pub domain: String,
+    pub certificate_issuer: String,
+    #[serde(default)]
+    pub valid_until_epoch_ms: i64,
+    #[serde(default)]
+    pub days_remaining: i32,
+    #[serde(default)]
+    pub alpn_protocols: Vec<String>,
+    #[serde(default)]
+    pub ocsp_stapling: bool,
+    #[serde(default)]
+    pub mutual_tls: bool,
+}
+
+/// Aggregate Ingress overview bundle.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct IngressOverviewDto {
+    #[serde(default)]
+    pub routes: Vec<IngressRouteDto>,
+    #[serde(default)]
+    pub upstreams: Vec<IngressUpstreamDto>,
+    #[serde(default)]
+    pub tls_health: Option<TlsHealthDto>,
+}
+
+impl Eq for IngressOverviewDto {}
+
 /// REST paths (relative to the configured API base).
 pub mod paths {
     use alloc::format;
@@ -1473,6 +1548,20 @@ pub mod paths {
     pub const OBS_METRICS: &str = "/api/obs/v1/metrics/timeseries";
     /// Observe DuckDB + Parquet storage health (`MuObserve`).
     pub const OBS_STORE_STATUS: &str = "/api/obs/v1/store/status";
+    /// Observe persistent SSE stream (`MuObserve`).
+    pub const OBS_EVENTS: &str = "/api/obs/v1/events";
+    /// Observe ingress overview (`MuObserve`).
+    pub const OBS_INGRESS_OVERVIEW: &str = "/api/obs/v1/ingress/overview";
+    /// Observe dynamic ingress routes (`MuObserve`).
+    pub const OBS_INGRESS_ROUTES: &str = "/api/obs/v1/ingress/routes";
+    /// Observe ingress upstreams health (`MuObserve`).
+    pub const OBS_INGRESS_UPSTREAMS: &str = "/api/obs/v1/ingress/upstreams";
+
+    /// `/api/obs/v1/logs?q={q}&limit={limit}`.
+    #[must_use]
+    pub fn obs_logs_query(q: &str, limit: usize) -> String {
+        format!("/api/obs/v1/logs?q={}&limit={}", q, limit)
+    }
 
     /// `/api/repos/{owner}/{repo}/summary`.
     #[must_use]

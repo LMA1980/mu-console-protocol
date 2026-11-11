@@ -665,3 +665,77 @@ fn raw_metric_points_aggregate_into_series_alongside_preaggregated_rows() {
     assert_eq!(series[2].samples, alloc::vec![175]);
     assert_eq!(series[2].p50_ms, 175);
 }
+
+#[test]
+fn test_ingress_subview_dtos_and_paths() {
+    use crate::dto::{
+        paths, IngressOverviewDto, IngressRouteDto, IngressUpstreamDto, TlsHealthDto,
+    };
+    use crate::model::{Area, ObserveSubView, SubView};
+
+    assert_eq!(ObserveSubView::ALL.len(), 7);
+    assert_eq!(ObserveSubView::ALL[6], ObserveSubView::Ingress);
+    assert_eq!(SubView::Observe(ObserveSubView::Ingress).slug(), "ingress");
+    assert_eq!(
+        SubView::Observe(ObserveSubView::Ingress).label(),
+        "Ingress & Edge"
+    );
+
+    let all_obs = SubView::all_for(Area::Observe);
+    assert_eq!(all_obs.len(), 7);
+    assert_eq!(all_obs[6], SubView::Observe(ObserveSubView::Ingress));
+
+    assert_eq!(paths::OBS_EVENTS, "/api/obs/v1/events");
+    assert_eq!(paths::OBS_INGRESS_OVERVIEW, "/api/obs/v1/ingress/overview");
+    assert_eq!(paths::OBS_INGRESS_ROUTES, "/api/obs/v1/ingress/routes");
+    assert_eq!(
+        paths::OBS_INGRESS_UPSTREAMS,
+        "/api/obs/v1/ingress/upstreams"
+    );
+    assert_eq!(
+        paths::obs_logs_query("panic", 50),
+        "/api/obs/v1/logs?q=panic&limit=50"
+    );
+
+    let route = IngressRouteDto {
+        route_id: "route-api-ci".into(),
+        path_prefix: "/api/ci/".into(),
+        upstream_url: "http://192.0.2.10:8000/api/".into(),
+        service_name: "actionrunner-controller".into(),
+        strip_prefix: true,
+        auth_required: false,
+        request_count: 1420,
+        request_rate_rps: 42.5,
+        error_rate_pct: 0.2,
+        p95_latency_ms: 18.4,
+    };
+    let upstream = IngressUpstreamDto {
+        upstream_id: "upstream-ci-controller".into(),
+        target_url: "http://192.0.2.10:8000".into(),
+        service_name: "actionrunner-controller".into(),
+        health_state: "HEALTHY".into(),
+        latency_ms: 4.2,
+        success_rate_pct: 99.8,
+        active_connections: 5,
+        last_check_ms: 1_700_000_000_000,
+    };
+    let tls = TlsHealthDto {
+        domain: "console.k3.internal".into(),
+        certificate_issuer: "step-ca intermediate".into(),
+        valid_until_epoch_ms: 1_705_000_000_000,
+        days_remaining: 58,
+        alpn_protocols: alloc::vec!["h2".into(), "http/1.1".into()],
+        ocsp_stapling: true,
+        mutual_tls: true,
+    };
+    let overview = IngressOverviewDto {
+        routes: alloc::vec![route.clone()],
+        upstreams: alloc::vec![upstream.clone()],
+        tls_health: Some(tls.clone()),
+    };
+
+    assert_eq!(route, route.clone());
+    assert_eq!(upstream, upstream.clone());
+    assert_eq!(tls, tls.clone());
+    assert_eq!(overview, overview.clone());
+}

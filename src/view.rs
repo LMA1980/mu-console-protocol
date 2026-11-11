@@ -11,7 +11,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-use crate::dto::AuthSessionDto;
+use crate::dto::{AuthSessionDto, IngressRouteDto, IngressUpstreamDto, TlsHealthDto};
 use crate::model::{RepoId, SubmoduleId};
 
 /// Mask private LAN and documentation IPv4 addresses:
@@ -972,6 +972,12 @@ pub struct ObserveView {
     pub logs: Vec<OtelLogEntry>,
     pub metrics: Vec<HardwareMetricSeries>,
     pub store: DataStoreHealth,
+    #[serde(default)]
+    pub ingress_routes: Vec<IngressRouteDto>,
+    #[serde(default)]
+    pub ingress_upstreams: Vec<IngressUpstreamDto>,
+    #[serde(default)]
+    pub tls_health: Option<TlsHealthDto>,
 }
 
 /// Current repository / submodule selection.
