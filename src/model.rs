@@ -97,16 +97,18 @@ pub enum ObserveSubView {
     Logs,
     Metrics,
     DataStore,
+    Ingress,
 }
 
 impl ObserveSubView {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Smartscape,
         Self::PurePath,
         Self::ProblemsSlos,
         Self::Logs,
         Self::Metrics,
         Self::DataStore,
+        Self::Ingress,
     ];
 }
 
@@ -184,6 +186,7 @@ impl SubView {
             Self::Observe(ObserveSubView::Logs) => "logs",
             Self::Observe(ObserveSubView::Metrics) => "metrics",
             Self::Observe(ObserveSubView::DataStore) => "store",
+            Self::Observe(ObserveSubView::Ingress) => "ingress",
             Self::Fleet(FleetSubView::WorkerNodes) => "nodes",
             Self::Fleet(FleetSubView::SandboxProfiles) => "sandboxes",
         }
@@ -208,6 +211,7 @@ impl SubView {
             Self::Observe(ObserveSubView::Logs) => "Logs",
             Self::Observe(ObserveSubView::Metrics) => "Metrics",
             Self::Observe(ObserveSubView::DataStore) => "Data Store",
+            Self::Observe(ObserveSubView::Ingress) => "Ingress & Edge",
             Self::Fleet(FleetSubView::WorkerNodes) => "Worker Nodes",
             Self::Fleet(FleetSubView::SandboxProfiles) => "Sandbox Profiles",
         }
@@ -239,6 +243,7 @@ impl SubView {
                 Self::Observe(ObserveSubView::Logs),
                 Self::Observe(ObserveSubView::Metrics),
                 Self::Observe(ObserveSubView::DataStore),
+                Self::Observe(ObserveSubView::Ingress),
             ],
             Area::Fleet => &[
                 Self::Fleet(FleetSubView::WorkerNodes),
