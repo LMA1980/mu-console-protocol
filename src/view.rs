@@ -11,8 +11,15 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-use crate::dto::{AuthSessionDto, IngressRouteDto, IngressUpstreamDto, TlsHealthDto};
-use crate::model::{RepoId, SubmoduleId};
+use crate::dto::{
+    AuthSessionDto, CdRunDto, IngressRouteDto, IngressUpstreamDto, ModelRunnerConnectionDto,
+    ModelRunnerStatusDto, PlatformSnapshotDto, RoleActivationDto, SubsystemHealthSummary,
+    TlsHealthDto, UserProfileDto,
+};
+use crate::model::{
+    Area, AuthReasonCode, DialogModel, RepoId, RoleLeaseView, SkipReason, SubmoduleId,
+    DEFAULT_MAX_ACTIVE_ROLES_HEADER_CHARS,
+};
 
 /// Mask private LAN and documentation IPv4 addresses:
 /// - RFC 1918 private IPv4 subnets (Class A, Class B, and Class C)
@@ -1014,74 +1021,276 @@ pub enum DataSource {
     OfflineCache,
 }
 
-/// Alert counts per area (LCD badges next to the 5 area lamps on `C1`).
+/// Alert counts across all 8 canonical console areas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct AreaBadges {
+    #[serde(default)]
+    pub dashboard: u32,
+    #[serde(default)]
     pub ci: u32,
+    #[serde(default)]
     pub cd: u32,
     #[serde(default)]
-    pub registry: u32,
+    pub ab_deploy: u32,
     #[serde(default)]
-    pub observe: u32,
-    pub fleet: u32,
+    pub repository: u32,
+    #[serde(default)]
+    pub observability: u32,
+    #[serde(default)]
+    pub model_runner: u32,
+    #[serde(default)]
+    pub platform: u32,
 }
 
-/// Operator authentication state surfaced in the top bar and used to gate
-/// raw execution logs and job restart controls.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// Fail-closed authorization phase governing cold boot, anonymous access, and Passkey gating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AuthState {
+pub enum AuthStatus {
+    /// Initial state before `/api/auth/session` resolves (`t = 0`: all 8 nav areas disabled).
     #[default]
+    Unresolved,
+    /// Unauthenticated visitor restricted to `RoleFolioIndex::anonymous` (`[]` by default).
     Anonymous,
-    InviteRequired {
-        github_login: String,
-    },
-    Operator {
-        github_login: String,
-        role: Option<String>,
-    },
+    /// Authenticated identity lacking baseline binding (zero invite disclosure).
+    AuthorizationDenied,
+    /// Authenticated bound account held at mandatory 0-Passkey onboarding gate.
+    PasskeyEnrollmentRequired,
+    /// Authenticated & Passkey-enrolled operator with active roles & PolicyFolios.
+    Active,
+}
+
+/// One active role pill displayed in the signed-in header (`+role[rem][idle]`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RoleBadgeView {
+    pub role_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub activation: RoleActivationDto,
+    #[serde(default)]
+    pub lease: Option<RoleLeaseView>,
+}
+
+impl RoleBadgeView {
+    /// Human-readable role badge text (`display_name` or fallback `role_id`).
+    #[must_use]
+    pub fn effective_label(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .unwrap_or(self.role_id.as_str())
+    }
+}
+
+/// Operator authentication, Passkey gate, active roles, and effective policy state.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AuthState {
+    #[serde(default)]
+    pub status: AuthStatus,
+    #[serde(default)]
+    pub github_login: Option<String>,
+    #[serde(default)]
+    pub passkey_count: u32,
+    #[serde(default)]
+    pub passkey_enrollment_required: bool,
+    #[serde(default)]
+    pub reason_code: Option<AuthReasonCode>,
+    #[serde(default)]
+    pub anonymous_lockdown: bool,
+    #[serde(default)]
+    pub baseline_role: Option<String>,
+    #[serde(default)]
+    pub bound_roles: Vec<String>,
+    #[serde(default)]
+    pub active_roles: Vec<RoleBadgeView>,
+    #[serde(default)]
+    pub leases: Vec<RoleLeaseView>,
+    #[serde(default)]
+    pub active_folios: Vec<String>,
+    #[serde(default)]
+    pub active_policies: Vec<String>,
 }
 
 impl AuthState {
-    /// Derive [`AuthState`] from an [`AuthSessionDto`] response.
+    /// Fail-closed initial state prior to `/api/auth/session` resolution.
     #[must_use]
-    pub fn from_session(dto: &AuthSessionDto) -> Self {
-        if dto.authenticated || dto.invite_bound {
-            Self::Operator {
-                github_login: dto
-                    .github_login
-                    .clone()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "operator".into()),
-                role: dto.role.clone(),
-            }
-        } else if let Some(login) = dto.github_login.as_ref().filter(|s| !s.is_empty()) {
-            Self::InviteRequired {
-                github_login: login.clone(),
-            }
-        } else {
-            Self::Anonymous
+    pub fn unresolved() -> Self {
+        Self::default()
+    }
+
+    /// Construct an explicit anonymous state (locked down when `active_policies` is empty).
+    #[must_use]
+    pub fn anonymous(active_policies: Vec<String>) -> Self {
+        let anonymous_lockdown = active_policies.is_empty();
+        Self {
+            status: AuthStatus::Anonymous,
+            anonymous_lockdown,
+            active_policies,
+            ..Self::default()
         }
     }
 
-    /// Whether the session is an authenticated, invite-bound operator.
+    /// Derive [`AuthState`] from an [`AuthSessionDto`] response.
     #[must_use]
-    pub fn is_operator(&self) -> bool {
-        matches!(self, Self::Operator { .. })
+    pub fn from_session(dto: &AuthSessionDto) -> Self {
+        if !dto.authenticated && !dto.invite_bound {
+            if let Some(login) = dto.github_login.as_ref().filter(|s| !s.is_empty()) {
+                return Self {
+                    status: AuthStatus::AuthorizationDenied,
+                    github_login: Some(login.clone()),
+                    passkey_count: dto.passkey_count,
+                    passkey_enrollment_required: false,
+                    reason_code: Some(
+                        dto.reason_code
+                            .unwrap_or(AuthReasonCode::AuthorizationDenied),
+                    ),
+                    anonymous_lockdown: dto.anonymous_lockdown,
+                    active_folios: dto.active_folios.clone(),
+                    active_policies: dto.active_policies.clone(),
+                    ..Self::default()
+                };
+            }
+            return Self {
+                status: AuthStatus::Anonymous,
+                github_login: None,
+                passkey_count: 0,
+                passkey_enrollment_required: false,
+                reason_code: dto.reason_code,
+                anonymous_lockdown: dto.anonymous_lockdown || dto.active_policies.is_empty(),
+                active_folios: dto.active_folios.clone(),
+                active_policies: dto.active_policies.clone(),
+                ..Self::default()
+            };
+        }
+
+        let login = dto
+            .github_login
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or_else(|| Some("operator".into()));
+
+        if dto.passkey_enrollment_required || dto.passkey_count == 0 {
+            return Self {
+                status: AuthStatus::PasskeyEnrollmentRequired,
+                github_login: login,
+                passkey_count: dto.passkey_count,
+                passkey_enrollment_required: true,
+                reason_code: Some(AuthReasonCode::PasskeyEnrollmentRequired),
+                anonymous_lockdown: false,
+                baseline_role: dto.baseline_role.clone(),
+                bound_roles: dto.bound_roles.clone(),
+                active_roles: Vec::new(),
+                leases: Vec::new(),
+                active_folios: Vec::new(),
+                active_policies: Vec::new(),
+            };
+        }
+
+        let mut active_roles: Vec<RoleBadgeView> = dto
+            .active_roles
+            .iter()
+            .map(|spec| {
+                let lease = dto.leases.iter().find(|l| l.role_id == spec.id).cloned();
+                RoleBadgeView {
+                    role_id: spec.id.clone(),
+                    display_name: spec.display_name.clone(),
+                    activation: spec.activation,
+                    lease,
+                }
+            })
+            .collect();
+
+        if active_roles.is_empty() {
+            if let Some(baseline) = dto.baseline_role.as_ref().or(dto.role.as_ref()) {
+                active_roles.push(RoleBadgeView {
+                    role_id: baseline.clone(),
+                    display_name: None,
+                    activation: RoleActivationDto::pinned_baseline(),
+                    lease: None,
+                });
+            }
+        }
+
+        Self {
+            status: AuthStatus::Active,
+            github_login: login,
+            passkey_count: dto.passkey_count,
+            passkey_enrollment_required: false,
+            reason_code: dto.reason_code,
+            anonymous_lockdown: false,
+            baseline_role: dto.baseline_role.clone().or_else(|| dto.role.clone()),
+            bound_roles: dto.bound_roles.clone(),
+            active_roles,
+            leases: dto.leases.clone(),
+            active_folios: dto.active_folios.clone(),
+            active_policies: dto.active_policies.clone(),
+        }
     }
 
-    /// Short top-bar badge label (`READ-ONLY`, `INVITE REQ (@login)`, `@login`).
+    /// Return `true` once `/api/auth/session` has responded (`status != Unresolved`).
+    #[must_use]
+    pub const fn is_resolved(&self) -> bool {
+        !matches!(self.status, AuthStatus::Unresolved)
+    }
+
+    /// Return `true` when the caller has an active Passkey-verified operator session.
+    #[must_use]
+    pub const fn is_operator(&self) -> bool {
+        matches!(self.status, AuthStatus::Active)
+    }
+
+    /// Return `true` when edge authentication identifies a GitHub account.
+    #[must_use]
+    pub const fn is_authenticated(&self) -> bool {
+        matches!(
+            self.status,
+            AuthStatus::AuthorizationDenied
+                | AuthStatus::PasskeyEnrollmentRequired
+                | AuthStatus::Active
+        )
+    }
+
+    /// Return `true` if `policy` is granted in the active effective policy set.
+    #[must_use]
+    pub fn has_policy(&self, policy: &str) -> bool {
+        self.is_resolved()
+            && !self.passkey_enrollment_required
+            && self.active_policies.iter().any(|p| p == policy)
+    }
+
+    /// Universal minimal-access check matching `mu-auth::PolicySet::has_subsystem_access`:
+    /// an [`Area`] is enabled if and only if at least one policy under its subsystem prefix is active.
+    #[must_use]
+    pub fn can_access_area(&self, area: Area) -> bool {
+        if !self.is_resolved() || self.passkey_enrollment_required {
+            return false;
+        }
+        let prefix = area.subsystem().policy_prefix();
+        self.active_policies
+            .iter()
+            .any(|p| p.split(':').next() == Some(prefix))
+    }
+
+    /// Short top-bar badge label without leaking invitation internals.
     #[must_use]
     pub fn badge_label(&self) -> String {
-        match self {
-            Self::Anonymous => "READ-ONLY".into(),
-            Self::InviteRequired { github_login } => format!("INVITE REQ (@{github_login})"),
-            Self::Operator { github_login, .. } => format!("@{github_login}"),
+        match self.status {
+            AuthStatus::Unresolved => "CONNECTING".into(),
+            AuthStatus::Anonymous => "READ-ONLY".into(),
+            AuthStatus::AuthorizationDenied => match &self.github_login {
+                Some(login) => format!("DENIED (@{login})"),
+                None => "DENIED".into(),
+            },
+            AuthStatus::PasskeyEnrollmentRequired | AuthStatus::Active => {
+                match &self.github_login {
+                    Some(login) => format!("@{login}"),
+                    None => "@operator".into(),
+                }
+            }
         }
     }
 }
 
-/// One pipeline stage execution record within a [`CiJobSummary`] (`CI > Queue & Logs` and `FLT > Worker Nodes`).
+/// One pipeline stage execution record within a [`CiJobSummary`] (`CI > Queue & Logs` and `CI > Worker Nodes`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct CiJobStage {
     pub id: String,
@@ -1091,7 +1300,21 @@ pub struct CiJobStage {
     pub state: StageState,
     pub duration_secs: u64,
     pub exit_code: i32,
+    #[serde(default)]
+    pub skip_reason: Option<SkipReason>,
 }
+
+/// Aggregate view model for `Area::ModelRunner` (`MR`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ModelRunnerView {
+    #[serde(default)]
+    pub status: Option<ModelRunnerStatusDto>,
+    #[serde(default)]
+    pub connection: Option<ModelRunnerConnectionDto>,
+}
+
+/// Backwards-compatible name for [`PlatformSnapshotDto`].
+pub type PlatformView = PlatformSnapshotDto;
 
 /// Queue or recent CI job record with full string `job_id`, per-stage breakdown, and raw build log lines.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1118,8 +1341,12 @@ pub struct CiJobSummary {
     pub raw_log_lines: Vec<String>,
 }
 
+fn default_max_active_roles_header_chars() -> u32 {
+    DEFAULT_MAX_ACTIVE_ROLES_HEADER_CHARS
+}
+
 /// Full view model snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewModel {
     pub source: DataSource,
     /// Scorecards, sorted by [`RepoId`].
@@ -1147,15 +1374,65 @@ pub struct ViewModel {
     pub observe: ObserveView,
     /// Set when the data is stale (offline snapshot): when it was saved.
     pub stale_since_epoch_ms: Option<u64>,
-    /// Operator authentication state.
+    /// Operator authentication & role-lease state (fail-closed `Unresolved` at `t = 0`).
     #[serde(default)]
     pub auth: AuthState,
-    /// Active, queued, and recent CI job records (`CI > Queue & Logs` and `FLT > Worker Nodes`).
+    /// UTF-8 character budget for the signed-in `+role[rem][idle]` header display (default `120`).
+    #[serde(default = "default_max_active_roles_header_chars")]
+    pub max_active_roles_header_chars: u32,
+    /// Signed-in user's profile, preferences (`Html`/`Wireframe`, font), and Passkey summaries.
+    #[serde(default)]
+    pub user_profile: Option<UserProfileDto>,
+    /// Currently open skin-agnostic modal dialog, if any.
+    #[serde(default)]
+    pub active_dialog: Option<DialogModel>,
+    /// Active, queued, and recent CI job records (`CI > Queue & Logs` and `CI > Worker Nodes`).
     #[serde(default)]
     pub ci_jobs: Vec<CiJobSummary>,
+    /// 7-subsystem live health & maintenance summary (`Dashboard` and `Platform > Maintenance`).
+    #[serde(default)]
+    pub subsystem_health: SubsystemHealthSummary,
+    /// Ecosystem-agnostic Continuous Delivery runs (`Area::Cd`).
+    #[serde(default)]
+    pub cd_runs: Vec<CdRunDto>,
+    /// Read-only Model-Runner runtime & WireGuard connection view (`Area::ModelRunner`).
+    #[serde(default)]
+    pub model_runner: ModelRunnerView,
+    /// `Area::Platform` configuration, users, invites, roles, folios, and audit feed.
+    #[serde(default)]
+    pub platform: PlatformSnapshotDto,
+}
+
+impl Default for ViewModel {
+    fn default() -> Self {
+        Self {
+            source: DataSource::default(),
+            repos: Vec::new(),
+            selection: None,
+            topology: None,
+            gate: None,
+            history: Vec::new(),
+            leases: Vec::new(),
+            nodes: Vec::new(),
+            sandboxes: Vec::new(),
+            registry: RegistryView::default(),
+            observe: ObserveView::default(),
+            stale_since_epoch_ms: None,
+            auth: AuthState::default(),
+            max_active_roles_header_chars: DEFAULT_MAX_ACTIVE_ROLES_HEADER_CHARS,
+            user_profile: None,
+            active_dialog: None,
+            ci_jobs: Vec::new(),
+            subsystem_health: SubsystemHealthSummary::default(),
+            cd_runs: Vec::new(),
+            model_runner: ModelRunnerView::default(),
+            platform: PlatformSnapshotDto::default(),
+        }
+    }
 }
 
 /// Incremental change to the view model.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Delta {
     Source(DataSource),
@@ -1188,7 +1465,14 @@ pub enum Delta {
     Observe(ObserveView),
     Stale(Option<u64>),
     Auth(AuthState),
+    MaxActiveRolesHeaderChars(u32),
+    UserProfile(Option<UserProfileDto>),
+    ActiveDialog(Option<DialogModel>),
     CiJobs(Vec<CiJobSummary>),
+    SubsystemHealth(SubsystemHealthSummary),
+    CdRuns(Vec<CdRunDto>),
+    ModelRunner(ModelRunnerView),
+    Platform(PlatformSnapshotDto),
 }
 
 fn upsert_sorted<T, K: Ord + ?Sized>(v: &mut Vec<T>, item: T, key: impl Fn(&T) -> &K) {
@@ -1223,7 +1507,14 @@ pub fn apply(vm: &mut ViewModel, delta: &Delta) {
         Delta::Observe(o) => vm.observe = o.clone(),
         Delta::Stale(s) => vm.stale_since_epoch_ms = *s,
         Delta::Auth(a) => vm.auth = a.clone(),
+        Delta::MaxActiveRolesHeaderChars(c) => vm.max_active_roles_header_chars = *c,
+        Delta::UserProfile(p) => vm.user_profile = p.clone(),
+        Delta::ActiveDialog(d) => vm.active_dialog = d.clone(),
         Delta::CiJobs(j) => vm.ci_jobs = j.clone(),
+        Delta::SubsystemHealth(h) => vm.subsystem_health = h.clone(),
+        Delta::CdRuns(runs) => vm.cd_runs = runs.clone(),
+        Delta::ModelRunner(mr) => vm.model_runner = mr.clone(),
+        Delta::Platform(p) => vm.platform = p.clone(),
         Delta::FabricRev(_)
         | Delta::SubmoduleBumpPending(_)
         | Delta::BranchUpsert(_)
@@ -1380,8 +1671,31 @@ pub fn diff(old: &ViewModel, new: &ViewModel) -> Vec<Delta> {
     if old.auth != new.auth {
         out.push(Delta::Auth(new.auth.clone()));
     }
+    if old.max_active_roles_header_chars != new.max_active_roles_header_chars {
+        out.push(Delta::MaxActiveRolesHeaderChars(
+            new.max_active_roles_header_chars,
+        ));
+    }
+    if old.user_profile != new.user_profile {
+        out.push(Delta::UserProfile(new.user_profile.clone()));
+    }
+    if old.active_dialog != new.active_dialog {
+        out.push(Delta::ActiveDialog(new.active_dialog.clone()));
+    }
     if old.ci_jobs != new.ci_jobs {
         out.push(Delta::CiJobs(new.ci_jobs.clone()));
+    }
+    if old.subsystem_health != new.subsystem_health {
+        out.push(Delta::SubsystemHealth(new.subsystem_health.clone()));
+    }
+    if old.cd_runs != new.cd_runs {
+        out.push(Delta::CdRuns(new.cd_runs.clone()));
+    }
+    if old.model_runner != new.model_runner {
+        out.push(Delta::ModelRunner(new.model_runner.clone()));
+    }
+    if old.platform != new.platform {
+        out.push(Delta::Platform(new.platform.clone()));
     }
     out
 }

@@ -16,15 +16,17 @@ Use these guidelines when modifying or consuming `mu-console-protocol` for IPC c
 
 ## 2. Protocol Components
 
-- **Commands & Events (`model`)**:
-  - `UiCommand`: Commands dispatched from UI to data worker (e.g., `Configure`, `Navigate`, `SelectRepo`, `Filter`).
-  - `DataEvent`: State updates and telemetry streamed from data worker to UI (e.g., `Snapshot`, `Patch`, `AuthSession`, `WorkerReady`).
+- **Commands, Areas, Skins & Dialogs (`model`)**:
+  - `PROTOCOL_VERSION = 6`; `ConsoleSkin::{Html, Wireframe}` (`Html` default).
+  - 8 role-gated `Area` variants (`Dashboard`, `Ci`, `Cd`, `AbDeploy`, `Repository`, `Observability`, `ModelRunner`, `Platform`) across 27 `SubView` variants, mapping legacy `#/iam`, `#/fleet`, `#/cd/gate`, `#/registry`, and `#/observe` routes cleanly.
+  - Skin-agnostic `DialogModel` (`PasskeyEnrollmentGate`, `UserProfile`, `SessionRoles`, `RiskConfirm`, `InviteCreatedOnce`), `RoleLeaseView`, `SkipReason`, `AuthReasonCode`, and `UiCommand` variants (never expose client-supplied role TTL overrides or manual A|B promotion).
 - **View Models & Diffs (`view`)**:
-  - Skin-agnostic `ViewModel` representation.
-  - Incremental `diff(old, new) -> Delta` and `apply(old, delta) -> ViewModel` ensuring minimal DOM updates.
+  - Skin-agnostic `ViewModel` (`Clone + PartialEq + Eq`) with fail-closed `AuthState` (`Unresolved` before session resolution, zero invite disclosure on `AuthorizationDenied`, mandatory `0`-Passkey gating).
+  - Incremental `diff(old, new) -> Vec<Delta>` and `apply(old, delta)` ensuring minimal DOM updates across all v6 fields.
   - Public log sanitization: Masks private LAN IPv4 addresses and internal node hostnames before UI rendering.
 - **REST & SSE DTOs (`dto`)**:
-  - Strongly typed serde mappings for Axum backend endpoints (`/api/repos`, `/api/events`, `/api/cd`, `/api/obs`).
+  - 1:1 `mu-auth` wire DTOs re-exported at the crate root (`SubsystemId`, `SubsystemStatus`, `MaintenanceMode`, `MaintenanceOverride`, `RoleSpec`, `PolicyFolio`, `RoleFolioIndex`), 7-subsystem `SubsystemHealthSummary`, ecosystem-agnostic `CdRunDto`, `ModelRunnerStatusDto`, `ModelRunnerConnectionDto`, and typed `paths::*` builders (`/api/auth/*`, `/api/cd/runs`, `/api/cd/deployments/{id}/rollback`, `/api/obs/v1/status/subsystems`, `/api/mr/v1/*`).
+  - Keep custom deserializers (e.g., `null_default`) gated on `is_human_readable()` so non-self-describing `postcard` frames remain binary-identical to `#[derive(Serialize)]`.
 - **Worker Configuration (`config`)**:
   - Query parameter extraction for `?api=`, `?scenario=`, `?invite=`.
 

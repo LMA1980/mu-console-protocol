@@ -9,11 +9,15 @@
 //! strings, timestamps are Unix epoch milliseconds and unknown fields are
 //! ignored, so servers may add fields without breaking the console.
 
+use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use serde::{Deserialize, Deserializer, Serialize};
+use core::fmt;
+use core::str::FromStr;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::model::{Area, AuthReasonCode, ConsoleSkin, CrtFont, RepoId, RoleLeaseView, SkipReason};
 pub use crate::view::{
     CanaryBundleState, GateOutcome, LogSeverity, PackageEcosystem, PrState, ProblemCategory,
     RepoStatus, RollbackReason, Slot, SmartscapeLayer, StageState, TestState, Visibility,
@@ -24,7 +28,11 @@ where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
 {
-    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+    if d.is_human_readable() {
+        Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+    } else {
+        T::deserialize(d)
+    }
 }
 
 /// Convert an `ActionRunner-controller` job identifier (e.g.
@@ -1337,6 +1345,8 @@ pub struct CiQueueStageDetailsDto {
     pub duration_secs: u64,
     #[serde(default)]
     pub exit_code: i32,
+    #[serde(default)]
+    pub skip_reason: Option<SkipReason>,
 }
 
 /// `status` nested object inside [`CiQueueStageDto`].
@@ -1361,6 +1371,18 @@ pub struct CiQueueStageDto {
     pub threads: u32,
     #[serde(default, deserialize_with = "null_default")]
     pub status: CiQueueStageStatusDto,
+    #[serde(default)]
+    pub skip_reason: Option<SkipReason>,
+}
+
+impl CiQueueStageDto {
+    /// Return structured skip reason from either stage-level or nested `status.details`.
+    #[must_use]
+    pub fn effective_skip_reason(&self) -> Option<&SkipReason> {
+        self.skip_reason
+            .as_ref()
+            .or(self.status.details.skip_reason.as_ref())
+    }
 }
 
 /// Nested `record` wrapper inside `active_jobs` / `queued_jobs` (`QueueItemView`) of `GET /api/queue`.
@@ -1435,7 +1457,7 @@ pub struct CiQueueDto {
     pub recent_jobs: Vec<CiQueueJobRecordDto>,
 }
 
-/// `GET /api/auth/session` and `POST /api/auth/redeem` response (`ActionRunner-controller`).
+/// `GET /api/auth/session` and `POST /api/auth/redeem` response (`mu-auth` / `ActionRunner-controller`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AuthSessionDto {
     #[serde(default)]
@@ -1446,6 +1468,942 @@ pub struct AuthSessionDto {
     pub invite_bound: bool,
     #[serde(default)]
     pub role: Option<String>,
+    #[serde(default)]
+    pub reason_code: Option<AuthReasonCode>,
+    #[serde(default)]
+    pub passkey_count: u32,
+    #[serde(default)]
+    pub passkey_enrollment_required: bool,
+    #[serde(default)]
+    pub anonymous_lockdown: bool,
+    #[serde(default)]
+    pub baseline_role: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub bound_roles: Vec<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub active_roles: Vec<RoleSpecDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub leases: Vec<RoleLeaseView>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub active_folios: Vec<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub active_policies: Vec<String>,
+    #[serde(default)]
+    pub preferences: Option<UserPreferencesDto>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+// ---------------------------------------------------------------- mu-auth & Platform DTOs
+
+/// Canonical 8 platform subsystems mirrored 1:1 with `mu-auth::SubsystemId`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SubsystemId {
+    #[default]
+    System,
+    Ci,
+    Cd,
+    #[serde(alias = "ab-deploy", alias = "ab_deploy")]
+    AbDeploy,
+    Repository,
+    Observability,
+    #[serde(alias = "model-runner", alias = "model_runner")]
+    ModelRunner,
+    Platform,
+}
+
+impl SubsystemId {
+    /// All 8 subsystems including [`Self::System`].
+    pub const ALL: [Self; 8] = [
+        Self::System,
+        Self::Ci,
+        Self::Cd,
+        Self::AbDeploy,
+        Self::Repository,
+        Self::Observability,
+        Self::ModelRunner,
+        Self::Platform,
+    ];
+
+    /// The 7 operational platform subsystems tracked for health & maintenance status.
+    pub const OPERATIONAL: [Self; 7] = [
+        Self::Ci,
+        Self::Cd,
+        Self::AbDeploy,
+        Self::Repository,
+        Self::Observability,
+        Self::ModelRunner,
+        Self::Platform,
+    ];
+
+    /// Canonical `snake_case` subsystem identifier string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Ci => "ci",
+            Self::Cd => "cd",
+            Self::AbDeploy => "ab_deploy",
+            Self::Repository => "repository",
+            Self::Observability => "observability",
+            Self::ModelRunner => "model_runner",
+            Self::Platform => "platform",
+        }
+    }
+
+    /// Canonical policy namespace prefix (`<prefix>:<resource>.<action>`).
+    #[must_use]
+    pub const fn policy_prefix(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Ci => "ci",
+            Self::Cd => "cd",
+            Self::AbDeploy => "ab",
+            Self::Repository => "reg",
+            Self::Observability => "obs",
+            Self::ModelRunner => "mr",
+            Self::Platform => "platform",
+        }
+    }
+
+    /// Resolve the [`Area`] mapped 1:1 to this subsystem.
+    #[must_use]
+    pub const fn area(self) -> Area {
+        match self {
+            Self::System => Area::Dashboard,
+            Self::Ci => Area::Ci,
+            Self::Cd => Area::Cd,
+            Self::AbDeploy => Area::AbDeploy,
+            Self::Repository => Area::Repository,
+            Self::Observability => Area::Observability,
+            Self::ModelRunner => Area::ModelRunner,
+            Self::Platform => Area::Platform,
+        }
+    }
+
+    /// Resolve a subsystem from its canonical policy prefix.
+    #[must_use]
+    pub fn from_policy_prefix(prefix: &str) -> Option<Self> {
+        match prefix {
+            "system" => Some(Self::System),
+            "ci" => Some(Self::Ci),
+            "cd" => Some(Self::Cd),
+            "ab" => Some(Self::AbDeploy),
+            "reg" => Some(Self::Repository),
+            "obs" => Some(Self::Observability),
+            "mr" => Some(Self::ModelRunner),
+            "platform" => Some(Self::Platform),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for SubsystemId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SubsystemId {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "system" => Ok(Self::System),
+            "ci" => Ok(Self::Ci),
+            "cd" => Ok(Self::Cd),
+            "ab_deploy" | "ab-deploy" | "ab" => Ok(Self::AbDeploy),
+            "repository" | "reg" => Ok(Self::Repository),
+            "observability" | "obs" => Ok(Self::Observability),
+            "model_runner" | "model-runner" | "mr" => Ok(Self::ModelRunner),
+            "platform" | "iam" => Ok(Self::Platform),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Generic 5-state operational health classification mirrored 1:1 with `mu-auth::SubsystemStatus`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubsystemStatus {
+    #[default]
+    Live,
+    #[serde(alias = "in_maintenance")]
+    InMaintenance,
+    #[serde(alias = "partial_maintenance")]
+    PartialMaintenance,
+    Offline,
+    Degraded,
+}
+
+impl SubsystemStatus {
+    /// Canonical `kebab-case` wire string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::InMaintenance => "in-maintenance",
+            Self::PartialMaintenance => "partial-maintenance",
+            Self::Offline => "offline",
+            Self::Degraded => "degraded",
+        }
+    }
+
+    /// Operator-facing status label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Live => "Live",
+            Self::InMaintenance => "In Maintenance",
+            Self::PartialMaintenance => "Partial Maintenance",
+            Self::Offline => "Offline",
+            Self::Degraded => "Degraded",
+        }
+    }
+
+    /// Return `true` when scheduled or partial maintenance is active.
+    #[must_use]
+    pub const fn is_maintenance(self) -> bool {
+        matches!(self, Self::InMaintenance | Self::PartialMaintenance)
+    }
+
+    /// Return `true` when outage SLO problem cards should be suppressed.
+    #[must_use]
+    pub const fn suppresses_slo_alerts(self) -> bool {
+        matches!(
+            self,
+            Self::InMaintenance | Self::PartialMaintenance | Self::Offline
+        )
+    }
+}
+
+impl fmt::Display for SubsystemStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SubsystemStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "live" => Ok(Self::Live),
+            "in-maintenance" | "in_maintenance" => Ok(Self::InMaintenance),
+            "partial-maintenance" | "partial_maintenance" => Ok(Self::PartialMaintenance),
+            "offline" => Ok(Self::Offline),
+            "degraded" => Ok(Self::Degraded),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Operator maintenance control mode mirrored 1:1 with `mu-auth::MaintenanceMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaintenanceMode {
+    #[default]
+    Auto,
+    Manual(SubsystemStatus),
+}
+
+/// Manual maintenance override mirrored 1:1 with `mu-auth::MaintenanceOverride`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MaintenanceOverrideDto {
+    pub subsystem: SubsystemId,
+    #[serde(default)]
+    pub status: SubsystemStatus,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub updated_by: Option<String>,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+    #[serde(default)]
+    pub auto_clear_at_ms: Option<u64>,
+}
+
+/// Type alias matching `mu-auth::MaintenanceOverride`.
+pub type MaintenanceOverride = MaintenanceOverrideDto;
+
+/// Step-up verification requirement mirrored 1:1 with `mu-auth::StepUpRequirement`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum StepUpRequirement {
+    #[default]
+    None,
+    Passkey,
+}
+
+/// Discriminant kind of [`RoleActivationDto`] matching `mu-auth::RoleActivation`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleActivationKind {
+    #[default]
+    PinnedBaseline,
+    Elective,
+    Timed,
+}
+
+/// Role activation lifecycle matching `mu-auth::RoleActivation`'s JSON tag format (`{"kind": ...}`)
+/// while remaining natively compatible with non-self-describing `postcard` frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RoleActivationDto {
+    pub kind: RoleActivationKind,
+    #[serde(default)]
+    pub hard_ttl_secs: Option<u64>,
+    #[serde(default)]
+    pub idle_ttl_secs: Option<u64>,
+}
+
+impl RoleActivationDto {
+    /// Canonical `PinnedBaseline` activation descriptor.
+    #[must_use]
+    pub const fn pinned_baseline() -> Self {
+        Self {
+            kind: RoleActivationKind::PinnedBaseline,
+            hard_ttl_secs: None,
+            idle_ttl_secs: None,
+        }
+    }
+
+    /// Dormant `Elective` role activation descriptor.
+    #[must_use]
+    pub const fn elective() -> Self {
+        Self {
+            kind: RoleActivationKind::Elective,
+            hard_ttl_secs: None,
+            idle_ttl_secs: None,
+        }
+    }
+
+    /// Fixed server-bounded `Timed` activation descriptor.
+    #[must_use]
+    pub const fn timed(hard_ttl_secs: u64, idle_ttl_secs: u64) -> Self {
+        Self {
+            kind: RoleActivationKind::Timed,
+            hard_ttl_secs: Some(hard_ttl_secs),
+            idle_ttl_secs: Some(idle_ttl_secs),
+        }
+    }
+}
+
+/// Type alias matching `mu-auth::RoleActivation`.
+pub type RoleActivation = RoleActivationDto;
+
+/// Role specification DTO mirrored 1:1 with `mu-auth::RoleSpec`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RoleSpecDto {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub description: String,
+    #[serde(default)]
+    pub activation: RoleActivationDto,
+    #[serde(default)]
+    pub step_up: StepUpRequirement,
+}
+
+impl RoleSpecDto {
+    /// Return human-facing display name when present, otherwise fallback to immutable role ID.
+    #[must_use]
+    pub fn effective_display_name(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(self.id.as_str())
+    }
+}
+
+/// Re-exported DTO alias for `mu-auth::RoleSpec`.
+pub type RoleSpec = RoleSpecDto;
+
+/// Provenance ownership of a [`PolicyFolioDto`], mirrored 1:1 with `mu-auth::FolioOrigin`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FolioOrigin {
+    Subsystem,
+    #[default]
+    Operator,
+}
+
+/// Atomic policy descriptor mirrored 1:1 with `mu-auth::Policy`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PolicyDto {
+    pub id: String,
+    pub subsystem: SubsystemId,
+    #[serde(default, deserialize_with = "null_default")]
+    pub description: String,
+}
+
+/// Composable positive-grant PolicyFolio DTO mirrored 1:1 with `mu-auth::PolicyFolio`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PolicyFolioDto {
+    pub id: String,
+    pub display_name: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub description: String,
+    #[serde(default)]
+    pub origin: FolioOrigin,
+    #[serde(default)]
+    pub owner_subsystem: Option<SubsystemId>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub includes: Vec<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub policies: Vec<String>,
+}
+
+/// Re-exported DTO alias for `mu-auth::PolicyFolio`.
+pub type PolicyFolio = PolicyFolioDto;
+
+/// Subsystem security manifest DTO mirrored 1:1 with `mu-auth::SubsystemSecurityManifest`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SubsystemSecurityManifestDto {
+    pub subsystem: SubsystemId,
+    #[serde(default, deserialize_with = "null_default")]
+    pub policies: Vec<PolicyDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub folios: Vec<PolicyFolioDto>,
+}
+
+/// Role-to-folio indirection table mirrored 1:1 with `mu-auth::RoleFolioIndex`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RoleFolioIndexDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub anonymous: Vec<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub role_folios: BTreeMap<String, Vec<String>>,
+}
+
+/// Re-exported DTO alias for `mu-auth::RoleFolioIndex`.
+pub type RoleFolioIndex = RoleFolioIndexDto;
+
+/// Per-credential WebAuthn Passkey metadata returned to the `@user` Profile modal.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PasskeySummaryDto {
+    pub credential_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub sign_count: u32,
+    #[serde(default)]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub last_used_at_ms: Option<u64>,
+}
+
+/// Persisted UI skin & accessibility font preferences attached to a user profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct UserPreferencesDto {
+    #[serde(default)]
+    pub skin: ConsoleSkin,
+    #[serde(default)]
+    pub font: CrtFont,
+}
+
+/// `GET/PUT /api/auth/profile` response (`@user` profile, preferences & enrolled Passkeys).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct UserProfileDto {
+    pub github_login: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub preferences: UserPreferencesDto,
+    #[serde(default, deserialize_with = "null_default")]
+    pub bound_roles: Vec<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub passkeys: Vec<PasskeySummaryDto>,
+    #[serde(default)]
+    pub passkey_count: u32,
+}
+
+/// Bound platform user summary listed in `Platform > Users & Invites`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PlatformUserDto {
+    pub github_login: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub bound_roles: Vec<String>,
+    #[serde(default)]
+    pub passkey_count: u32,
+    #[serde(default)]
+    pub last_seen_ms: Option<u64>,
+    #[serde(default)]
+    pub is_platform_admin: bool,
+}
+
+/// Onboarding invite record listed in `Platform > Users & Invites`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct InviteRecordDto {
+    pub invite_id: String,
+    pub granted_role: String,
+    pub expires_at_ms: u64,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    #[serde(default)]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub redeemed_by: Option<String>,
+    #[serde(default)]
+    pub redeemed_at_ms: Option<u64>,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
+/// Single-display response from `POST /api/auth/invites`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CreatedInviteResponseDto {
+    pub invite_id: String,
+    pub token: String,
+    pub url: String,
+    pub granted_role: String,
+    pub expires_at_ms: u64,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Sanitized platform authorization / audit activity entry.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AuditActivityEntryDto {
+    pub timestamp_ms: u64,
+    pub actor: String,
+    pub action: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub outcome: String,
+}
+
+/// Combined platform configuration & RBAC snapshot (`Area::Platform`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PlatformSnapshotDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub subsystems: Vec<SubsystemStatusEntryDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub users: Vec<PlatformUserDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub invites: Vec<InviteRecordDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub roles: Vec<RoleSpecDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub folios: Vec<PolicyFolioDto>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub policies: Vec<PolicyDto>,
+    #[serde(default)]
+    pub role_folio_index: RoleFolioIndexDto,
+    #[serde(default, deserialize_with = "null_default")]
+    pub recent_activity: Vec<AuditActivityEntryDto>,
+}
+
+// ---------------------------------------------------------------- 7-Subsystem Health DTOs
+
+/// One subsystem status row returned by `GET /api/obs/v1/status/subsystems`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SubsystemStatusEntryDto {
+    pub subsystem: SubsystemId,
+    #[serde(default)]
+    pub effective_status: SubsystemStatus,
+    #[serde(default)]
+    pub probe_status: SubsystemStatus,
+    #[serde(default)]
+    pub mode: MaintenanceMode,
+    #[serde(default, deserialize_with = "null_default")]
+    pub summary: String,
+    #[serde(default)]
+    pub updated_by: Option<String>,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+    #[serde(default)]
+    pub auto_clear_at_ms: Option<u64>,
+    #[serde(default)]
+    pub active_incidents: u32,
+}
+
+/// Per-subsystem health record stored inside [`SubsystemHealthSummary`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SubsystemHealthEntry {
+    #[serde(default)]
+    pub status: SubsystemStatus,
+    #[serde(default)]
+    pub probe_status: SubsystemStatus,
+    #[serde(default)]
+    pub mode: MaintenanceMode,
+    #[serde(default, deserialize_with = "null_default")]
+    pub summary: String,
+    #[serde(default)]
+    pub updated_by: Option<String>,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+    #[serde(default)]
+    pub auto_clear_at_ms: Option<u64>,
+    #[serde(default)]
+    pub active_incidents: u32,
+}
+
+impl From<&SubsystemStatusEntryDto> for SubsystemHealthEntry {
+    fn from(dto: &SubsystemStatusEntryDto) -> Self {
+        Self {
+            status: dto.effective_status,
+            probe_status: dto.probe_status,
+            mode: dto.mode,
+            summary: dto.summary.clone(),
+            updated_by: dto.updated_by.clone(),
+            updated_at_ms: dto.updated_at_ms,
+            auto_clear_at_ms: dto.auto_clear_at_ms,
+            active_incidents: dto.active_incidents,
+        }
+    }
+}
+
+/// Typed 7-operational-subsystem health snapshot (`ci`, `cd`, `ab_deploy`, `repository`,
+/// `observability`, `model_runner`, `platform`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SubsystemHealthSummary {
+    pub ci: SubsystemHealthEntry,
+    pub cd: SubsystemHealthEntry,
+    pub ab_deploy: SubsystemHealthEntry,
+    pub repository: SubsystemHealthEntry,
+    pub observability: SubsystemHealthEntry,
+    pub model_runner: SubsystemHealthEntry,
+    pub platform: SubsystemHealthEntry,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+}
+
+impl SubsystemHealthSummary {
+    /// Construct from a slice of [`SubsystemStatusEntryDto`] items.
+    #[must_use]
+    pub fn from_entries(entries: &[SubsystemStatusEntryDto]) -> Self {
+        let mut summary = Self::default();
+        for entry in entries {
+            summary.apply_entry(entry);
+        }
+        summary
+    }
+
+    /// Update the matching operational subsystem entry in place.
+    pub fn apply_entry(&mut self, entry: &SubsystemStatusEntryDto) {
+        if let Some(slot) = self.get_mut(entry.subsystem) {
+            *slot = SubsystemHealthEntry::from(entry);
+            self.updated_at_ms = self.updated_at_ms.max(entry.updated_at_ms);
+        }
+    }
+
+    /// Borrow health entry for an operational subsystem (`None` for [`SubsystemId::System`]).
+    #[must_use]
+    pub const fn get(&self, id: SubsystemId) -> Option<&SubsystemHealthEntry> {
+        match id {
+            SubsystemId::System => None,
+            SubsystemId::Ci => Some(&self.ci),
+            SubsystemId::Cd => Some(&self.cd),
+            SubsystemId::AbDeploy => Some(&self.ab_deploy),
+            SubsystemId::Repository => Some(&self.repository),
+            SubsystemId::Observability => Some(&self.observability),
+            SubsystemId::ModelRunner => Some(&self.model_runner),
+            SubsystemId::Platform => Some(&self.platform),
+        }
+    }
+
+    /// Mutably borrow health entry for an operational subsystem (`None` for [`SubsystemId::System`]).
+    pub fn get_mut(&mut self, id: SubsystemId) -> Option<&mut SubsystemHealthEntry> {
+        match id {
+            SubsystemId::System => None,
+            SubsystemId::Ci => Some(&mut self.ci),
+            SubsystemId::Cd => Some(&mut self.cd),
+            SubsystemId::AbDeploy => Some(&mut self.ab_deploy),
+            SubsystemId::Repository => Some(&mut self.repository),
+            SubsystemId::Observability => Some(&mut self.observability),
+            SubsystemId::ModelRunner => Some(&mut self.model_runner),
+            SubsystemId::Platform => Some(&mut self.platform),
+        }
+    }
+
+    /// Return all 7 operational subsystem entries in canonical order.
+    #[must_use]
+    pub const fn entries(&self) -> [(SubsystemId, &SubsystemHealthEntry); 7] {
+        [
+            (SubsystemId::Ci, &self.ci),
+            (SubsystemId::Cd, &self.cd),
+            (SubsystemId::AbDeploy, &self.ab_deploy),
+            (SubsystemId::Repository, &self.repository),
+            (SubsystemId::Observability, &self.observability),
+            (SubsystemId::ModelRunner, &self.model_runner),
+            (SubsystemId::Platform, &self.platform),
+        ]
+    }
+
+    /// Rolled-up platform banner status derived from the 7 operational subsystems.
+    #[must_use]
+    pub fn overall_status(&self) -> SubsystemStatus {
+        let mut any_offline = false;
+        let mut any_degraded = false;
+        let mut any_partial_maint = false;
+        let mut maint_count = 0usize;
+        for (_, entry) in self.entries() {
+            match entry.status {
+                SubsystemStatus::Offline => any_offline = true,
+                SubsystemStatus::Degraded => any_degraded = true,
+                SubsystemStatus::InMaintenance => maint_count += 1,
+                SubsystemStatus::PartialMaintenance => any_partial_maint = true,
+                SubsystemStatus::Live => {}
+            }
+        }
+        if any_offline {
+            SubsystemStatus::Offline
+        } else if any_degraded {
+            SubsystemStatus::Degraded
+        } else if maint_count == 7 {
+            SubsystemStatus::InMaintenance
+        } else if maint_count > 0 || any_partial_maint {
+            SubsystemStatus::PartialMaintenance
+        } else {
+            SubsystemStatus::Live
+        }
+    }
+}
+
+/// SSE `event: subsystem_status_changed` on `/api/obs/v1/events`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SubsystemStatusChangedDto {
+    pub entry: SubsystemStatusEntryDto,
+}
+
+// ---------------------------------------------------------------- Ecosystem-Agnostic CD & A|B Rollback DTOs
+
+/// Ecosystem identifier carried by [`CdRunDto`] (`"cargo"`, `"dotnet"`, `"maven"`, or custom).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum CdEcosystem {
+    #[default]
+    Cargo,
+    DotNet,
+    Maven,
+    Custom(String),
+}
+
+impl CdEcosystem {
+    /// Normalize an ecosystem label cleanly (`".net"`/`"nuget"` -> [`Self::DotNet`]).
+    #[must_use]
+    pub fn from_label(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "cargo" | "rust" => Self::Cargo,
+            "dotnet" | ".net" | "nuget" => Self::DotNet,
+            "maven" | "java" => Self::Maven,
+            other => Self::Custom(other.to_string()),
+        }
+    }
+
+    /// Canonical lowercase wire slug (`"cargo"`, `"dotnet"`, `"maven"`, or custom slug).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Cargo => "cargo",
+            Self::DotNet => "dotnet",
+            Self::Maven => "maven",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+
+    /// Human-facing badge label (`"Cargo"`, `".NET"`, `"Maven"`, or custom slug).
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Cargo => "Cargo",
+            Self::DotNet => ".NET",
+            Self::Maven => "Maven",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl Serialize for CdEcosystem {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CdEcosystem {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::from_label(&raw))
+    }
+}
+
+/// Lifecycle state of an ecosystem-agnostic delivery run or step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CdRunState {
+    #[default]
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Blocked,
+    RolledBack,
+}
+
+/// One ordered delivery stage inside [`CdRunDto`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CdStepDto {
+    pub step_id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub label: String,
+    #[serde(default)]
+    pub state: CdRunState,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub skip_reason: Option<SkipReason>,
+    #[serde(default)]
+    pub error_summary: Option<String>,
+    #[serde(default)]
+    pub failed_package: Option<String>,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+}
+
+/// Pinpointed failure diagnosis attached to a failed [`CdRunDto`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CdRunFailurePinpointDto {
+    pub step_id: String,
+    #[serde(default)]
+    pub package_name: Option<String>,
+    #[serde(default)]
+    pub package_version: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub reason: String,
+    #[serde(default)]
+    pub log_excerpt: Option<String>,
+}
+
+/// Ecosystem-agnostic `GET /api/cd/runs` release/publish record (`Area::Cd`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CdRunDto {
+    pub run_id: String,
+    #[serde(default)]
+    pub ecosystem: CdEcosystem,
+    #[serde(default)]
+    pub repo: RepoId,
+    #[serde(default, deserialize_with = "null_default")]
+    pub ref_name: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub commit_sha: String,
+    #[serde(default)]
+    pub state: CdRunState,
+    #[serde(default)]
+    pub started_epoch_ms: u64,
+    #[serde(default)]
+    pub finished_epoch_ms: Option<u64>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub steps: Vec<CdStepDto>,
+    #[serde(default)]
+    pub failure: Option<CdRunFailurePinpointDto>,
+    #[serde(default)]
+    pub registry_package: Option<String>,
+    #[serde(default)]
+    pub registry_version: Option<String>,
+    #[serde(default)]
+    pub ab_deployment_id: Option<String>,
+    #[serde(default)]
+    pub artifact_digest: Option<String>,
+}
+
+/// `POST /api/cd/deployments/{id}/rollback` JSON body.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AbRollbackRequestDto {
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `POST /api/cd/deployments/{id}/rollback` response.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AbRollbackResponseDto {
+    pub deployment_id: String,
+    #[serde(default)]
+    pub restored_slot: Slot,
+    #[serde(default)]
+    pub tainted_digest: Option<String>,
+}
+
+// ---------------------------------------------------------------- Model-Runner DTOs
+
+/// One resident model inside `GET /api/mr/v1/status`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ResidentModelStatusDto {
+    pub model_id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub cluster: String,
+    #[serde(default)]
+    pub is_alive: bool,
+    #[serde(default)]
+    pub n_ctx: u32,
+    #[serde(default)]
+    pub mlock_bytes: u64,
+    #[serde(default)]
+    pub memlock_ceiling_bytes: u64,
+    #[serde(default)]
+    pub queue_depth: u32,
+}
+
+/// `GET /api/mr/v1/status` response (`folio:mr:read`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ModelRunnerStatusDto {
+    #[serde(default)]
+    pub total_queue_depth: u32,
+    #[serde(default)]
+    pub is_executing: bool,
+    #[serde(default)]
+    pub estimated_wait_ms: u64,
+    #[serde(default)]
+    pub mlock_used_bytes: u64,
+    #[serde(default)]
+    pub memlock_ceiling_bytes: u64,
+    #[serde(default, deserialize_with = "null_default")]
+    pub models: Vec<ResidentModelStatusDto>,
+}
+
+/// Sanitized WireGuard peer handshake summary inside [`ModelRunnerConnectionDto`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct WireGuardPeerSummaryDto {
+    pub public_key_prefix: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub allowed_ips: String,
+    #[serde(default)]
+    pub latest_handshake_epoch_ms: Option<u64>,
+    #[serde(default)]
+    pub rx_bytes: u64,
+    #[serde(default)]
+    pub tx_bytes: u64,
+}
+
+/// `GET /api/mr/v1/connection` response (`folio:mr:connect`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ModelRunnerConnectionDto {
+    #[serde(default, deserialize_with = "null_default")]
+    pub openai_base_url: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub openai_routes: Vec<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub auth_header_guide: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub wireguard_endpoint: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub tunnel_cidr: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub interface_state: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub peers: Vec<WireGuardPeerSummaryDto>,
 }
 
 /// Dynamic reverse-proxy route definition.
@@ -1528,10 +2486,14 @@ pub mod paths {
     use alloc::format;
     use alloc::string::String;
 
+    use super::SubsystemId;
+
     /// CI event stream (existing endpoint, new event kinds).
     pub const CI_EVENTS: &str = "/api/events";
     /// CD event stream.
     pub const CD_EVENTS: &str = "/api/cd/events";
+    /// Ecosystem-agnostic CD release/publish runs (`MuConDe-controller`).
+    pub const CD_RUNS: &str = "/api/cd/runs";
     /// Repository list.
     pub const REPOS: &str = "/api/repos";
     /// Cluster fabric worker nodes (`ActionRunner-controller`).
@@ -1544,6 +2506,32 @@ pub mod paths {
     pub const AUTH_SESSION: &str = "/api/auth/session";
     /// One-time invite token redemption endpoint.
     pub const AUTH_REDEEM: &str = "/api/auth/redeem";
+    /// Signed-in user profile and synced skin/font preferences.
+    pub const AUTH_PROFILE: &str = "/api/auth/profile";
+    /// User Passkey credential list.
+    pub const AUTH_PASSKEYS: &str = "/api/auth/passkeys";
+    /// Begin WebAuthn Passkey enrollment ceremony.
+    pub const AUTH_PASSKEYS_REGISTER_START: &str = "/api/auth/passkeys/register/start";
+    /// Complete WebAuthn Passkey enrollment ceremony.
+    pub const AUTH_PASSKEYS_REGISTER_FINISH: &str = "/api/auth/passkeys/register/finish";
+    /// Begin Passkey step-up challenge for `Timed` role elevation.
+    pub const AUTH_ELEVATE_START: &str = "/api/auth/elevate/start";
+    /// Complete Passkey step-up verification for `Timed` role elevation.
+    pub const AUTH_ELEVATE_FINISH: &str = "/api/auth/elevate/finish";
+    /// Lock all active `Timed` elevated roles on the current session.
+    pub const AUTH_ROLE_LOCK: &str = "/api/auth/roles/lock";
+    /// Explicit user activity touch resetting active `Timed` `idle_timer`s.
+    pub const AUTH_ACTIVITY: &str = "/api/auth/activity";
+    /// Platform `RoleCatalog` management endpoint.
+    pub const AUTH_ROLES: &str = "/api/auth/roles";
+    /// Platform `PolicyFolio` catalog endpoint.
+    pub const AUTH_FOLIOS: &str = "/api/auth/folios";
+    /// Platform `RoleFolioIndex` endpoint.
+    pub const AUTH_ROLE_FOLIO_INDEX: &str = "/api/auth/role-folio-index";
+    /// Bound platform user directory endpoint.
+    pub const AUTH_USERS: &str = "/api/auth/users";
+    /// Platform onboarding invites endpoint.
+    pub const AUTH_INVITES: &str = "/api/auth/invites";
 
     /// Registry package catalog (`MuRegist`).
     pub const REG_PACKAGES: &str = "/api/reg/v1/packages";
@@ -1551,6 +2539,11 @@ pub mod paths {
     pub const REG_CANARIES: &str = "/api/reg/v1/canaries";
     /// Registry CAS storage health (`MuRegist`).
     pub const REG_CAS_STATUS: &str = "/api/reg/v1/cas/status";
+
+    /// Model-Runner resident model & queue telemetry (`jero-manager`).
+    pub const MR_STATUS: &str = "/api/mr/v1/status";
+    /// Model-Runner OpenAI API & rootless WireGuard connection details (`jero-manager`).
+    pub const MR_CONNECTION: &str = "/api/mr/v1/connection";
 
     /// Observe Smartscape 3-tier topology (`MuObserve`).
     pub const OBS_SMARTSCAPE: &str = "/api/obs/v1/smartscape";
@@ -1566,6 +2559,8 @@ pub mod paths {
     pub const OBS_STORE_STATUS: &str = "/api/obs/v1/store/status";
     /// Observe persistent SSE stream (`MuObserve`).
     pub const OBS_EVENTS: &str = "/api/obs/v1/events";
+    /// Unified 7-subsystem operational health & maintenance feed (`MuObserve`).
+    pub const OBS_SUBSYSTEM_STATUS: &str = "/api/obs/v1/status/subsystems";
     /// Observe ingress overview (`MuObserve`).
     pub const OBS_INGRESS_OVERVIEW: &str = "/api/obs/v1/ingress/overview";
     /// Observe dynamic ingress routes (`MuObserve`).
@@ -1614,10 +2609,86 @@ pub mod paths {
         format!("/api/cd/deployments?repo={owner}/{repo}&limit={limit}")
     }
 
+    /// `/api/cd/runs?repo={owner}/{repo}&limit={limit}[&ecosystem={eco}]`.
+    #[must_use]
+    pub fn cd_runs(owner: &str, repo: &str, ecosystem: Option<&str>, limit: u32) -> String {
+        let repo_param = format!("{owner}/{repo}");
+        match ecosystem {
+            Some(eco) if !eco.is_empty() => format!(
+                "/api/cd/runs?repo={}&ecosystem={}&limit={}",
+                percent_encode_query(&repo_param),
+                percent_encode_query(eco),
+                limit
+            ),
+            _ => format!(
+                "/api/cd/runs?repo={}&limit={}",
+                percent_encode_query(&repo_param),
+                limit
+            ),
+        }
+    }
+
     /// `/api/cd/deployments/{id}/gate`.
     #[must_use]
     pub fn gate(deployment_id: &str) -> String {
         format!("/api/cd/deployments/{deployment_id}/gate")
+    }
+
+    /// `/api/cd/deployments/{id}/rollback` (`POST` emergency symmetric Btrfs rollback).
+    #[must_use]
+    pub fn ab_rollback(deployment_id: &str) -> String {
+        format!("/api/cd/deployments/{deployment_id}/rollback")
+    }
+
+    /// `/api/obs/v1/status/subsystems/{subsystem}/maintenance`.
+    #[must_use]
+    pub fn subsystem_maintenance(subsystem: SubsystemId) -> String {
+        format!(
+            "/api/obs/v1/status/subsystems/{}/maintenance",
+            subsystem.as_str()
+        )
+    }
+
+    /// `/api/auth/roles/{role_id}/enable`.
+    #[must_use]
+    pub fn role_enable(role_id: &str) -> String {
+        format!("/api/auth/roles/{role_id}/enable")
+    }
+
+    /// `/api/auth/roles/{role_id}/disable`.
+    #[must_use]
+    pub fn role_disable(role_id: &str) -> String {
+        format!("/api/auth/roles/{role_id}/disable")
+    }
+
+    /// `/api/auth/passkeys/{credential_id}`.
+    #[must_use]
+    pub fn auth_passkey(credential_id: &str) -> String {
+        format!("/api/auth/passkeys/{credential_id}")
+    }
+
+    /// `/api/auth/users/{login}/roles`.
+    #[must_use]
+    pub fn auth_user_roles(login: &str) -> String {
+        format!("/api/auth/users/{login}/roles")
+    }
+
+    /// `/api/auth/users/{login}/passkeys/reset`.
+    #[must_use]
+    pub fn auth_user_passkeys_reset(login: &str) -> String {
+        format!("/api/auth/users/{login}/passkeys/reset")
+    }
+
+    /// `/api/auth/users/{login}`.
+    #[must_use]
+    pub fn auth_user(login: &str) -> String {
+        format!("/api/auth/users/{login}")
+    }
+
+    /// `/api/auth/invites/{invite_id}`.
+    #[must_use]
+    pub fn auth_invite(invite_id: &str) -> String {
+        format!("/api/auth/invites/{invite_id}")
     }
 
     /// `/api/obs/v1/traces/{trace_id}`.

@@ -179,11 +179,63 @@ fn gen_gate(r: &mut Rng) -> DeploymentGate {
     }
 }
 
+fn gen_auth(r: &mut Rng) -> AuthState {
+    match r.below(4) {
+        0 => AuthState::unresolved(),
+        1 => AuthState::anonymous(if r.coin() {
+            alloc::vec!["folio:ci:read".into()]
+        } else {
+            Vec::new()
+        }),
+        2 => AuthState::from_session(&crate::dto::AuthSessionDto {
+            authenticated: true,
+            github_login: Some(r.name("pending-", 4)),
+            invite_bound: true,
+            passkey_count: 0,
+            passkey_enrollment_required: true,
+            ..crate::dto::AuthSessionDto::default()
+        }),
+        _ => AuthState::from_session(&crate::dto::AuthSessionDto {
+            authenticated: true,
+            github_login: Some(r.name("op-", 4)),
+            invite_bound: true,
+            passkey_count: 1,
+            baseline_role: Some("operator".into()),
+            bound_roles: alloc::vec!["operator".into(), "admin".into()],
+            active_roles: alloc::vec![RoleSpecDto {
+                id: "operator".into(),
+                display_name: Some("Operator".into()),
+                description: String::new(),
+                activation: RoleActivationDto::pinned_baseline(),
+                step_up: StepUpRequirement::None,
+            }],
+            leases: if r.coin() {
+                alloc::vec![RoleLeaseView {
+                    role_id: "admin".into(),
+                    seconds_remaining: 900,
+                    idle_timer: 450,
+                    ..RoleLeaseView::default()
+                }]
+            } else {
+                Vec::new()
+            },
+            active_folios: alloc::vec!["folio:ops".into()],
+            active_policies: alloc::vec!["ci:jobs:read".into(), "cd:runs:read".into()],
+            ..crate::dto::AuthSessionDto::default()
+        }),
+    }
+}
+
 fn gen_view(r: &mut Rng) -> ViewModel {
     let repos = (0..r.len(6)).map(|_| gen_repo(r)).collect();
     let nodes = (0..r.len(3))
         .map(|_| FabricNode::new(r.name("node-", 4), r.coin()))
         .collect();
+    let mut subsystem_health = SubsystemHealthSummary::default();
+    if r.coin() {
+        subsystem_health.cd.status = SubsystemStatus::InMaintenance;
+        subsystem_health.updated_at_ms = 1_700_000_000_000;
+    }
     ViewModel {
         source: match r.below(3) {
             0 => DataSource::Live,
@@ -204,17 +256,71 @@ fn gen_view(r: &mut Rng) -> ViewModel {
         sandboxes: Vec::new(),
         registry: RegistryView::default(),
         observe: ObserveView::default(),
-        auth: match r.below(3) {
-            0 => AuthState::Anonymous,
-            1 => AuthState::InviteRequired {
-                github_login: r.name("guest-", 4),
-            },
-            _ => AuthState::Operator {
-                github_login: r.name("op-", 4),
-                role: r.coin().then(|| "operator".into()),
-            },
+        auth: gen_auth(r),
+        max_active_roles_header_chars: if r.coin() { 120 } else { 80 },
+        user_profile: r.coin().then(|| UserProfileDto {
+            github_login: r.name("u-", 3),
+            display_name: Some("Operator".into()),
+            preferences: UserPreferencesDto::default(),
+            bound_roles: alloc::vec!["operator".into()],
+            passkeys: alloc::vec![PasskeySummaryDto {
+                credential_id: "cred-1".into(),
+                label: Some("Touch ID".into()),
+                sign_count: 1,
+                created_at_ms: 1_700_000_000_000,
+                last_used_at_ms: None,
+            }],
+            passkey_count: 1,
+        }),
+        active_dialog: match r.below(3) {
+            0 => None,
+            1 => Some(DialogModel::PasskeyEnrollmentGate(
+                PasskeyEnrollmentGateModel {
+                    github_login: "u1".into(),
+                    passkey_count: 0,
+                    reason_code: Some(AuthReasonCode::PasskeyEnrollmentRequired),
+                },
+            )),
+            _ => Some(DialogModel::UserProfile(UserProfileDialogModel::default())),
         },
         ci_jobs: Vec::new(),
+        subsystem_health,
+        cd_runs: if r.coin() {
+            alloc::vec![CdRunDto {
+                run_id: "run-1".into(),
+                ecosystem: CdEcosystem::Cargo,
+                repo: RepoId::new("o0", "r1"),
+                ref_name: "refs/heads/main".into(),
+                commit_sha: "abc1234".into(),
+                state: CdRunState::Succeeded,
+                started_epoch_ms: 100,
+                finished_epoch_ms: Some(250),
+                steps: alloc::vec![CdStepDto {
+                    step_id: "publish".into(),
+                    label: "Publish crate".into(),
+                    state: CdRunState::Succeeded,
+                    duration_ms: 150,
+                    ..CdStepDto::default()
+                }],
+                ..CdRunDto::default()
+            }]
+        } else {
+            Vec::new()
+        },
+        model_runner: if r.coin() {
+            ModelRunnerView {
+                status: Some(ModelRunnerStatusDto {
+                    total_queue_depth: 1,
+                    is_executing: true,
+                    estimated_wait_ms: 120,
+                    ..ModelRunnerStatusDto::default()
+                }),
+                connection: None,
+            }
+        } else {
+            ModelRunnerView::default()
+        },
+        platform: PlatformSnapshotDto::default(),
     }
 }
 
@@ -272,7 +378,16 @@ fn mutate(r: &mut Rng, vm: &ViewModel) -> ViewModel {
                 }
             }
             5 => out.nodes.retain(|n| n.online),
-            6 => out.stale_since_epoch_ms = None,
+            6 => {
+                out.stale_since_epoch_ms = None;
+                out.auth = gen_auth(r);
+                out.active_dialog = None;
+                out.subsystem_health.ab_deploy.status = SubsystemStatus::Degraded;
+                out.model_runner.connection = Some(ModelRunnerConnectionDto {
+                    openai_base_url: "https://console.example.invalid/mr/v1".into(),
+                    ..ModelRunnerConnectionDto::default()
+                });
+            }
             _ => out = gen_view(r),
         }
     }
@@ -412,59 +527,96 @@ fn sanitize_public_log_redacts_private_ips_hosts_and_paths() {
 
 #[test]
 fn subviews_round_trip_and_step_within_area() {
+    assert_eq!(Area::ALL.len(), 8);
+    let mut total_subviews = 0usize;
     for area in Area::ALL {
         let views = SubView::all_for(area);
-        assert!(views.len() >= 2);
+        assert!(!views.is_empty());
+        total_subviews += views.len();
         assert_eq!(SubView::default_for(area), views[0]);
         for (idx, sv) in views.iter().copied().enumerate() {
             assert_eq!(sv.area(), area);
             assert!(!sv.label().is_empty());
+            assert!(!sv.slug().is_empty());
             let next = sv.step(1);
             assert_eq!(next, views[(idx + 1) % views.len()]);
             let prev = next.step(-1);
             assert_eq!(prev, sv);
+            let round = SubView::from_area_and_slug(area, sv.slug());
+            assert_eq!(round, Some(sv));
         }
     }
+    assert_eq!(total_subviews, 27);
 }
 
 #[test]
 fn auth_state_and_commands_round_trip_through_postcard() {
     use crate::dto::AuthSessionDto;
 
+    let unresolved = AuthState::unresolved();
+    assert!(!unresolved.is_resolved());
+    assert!(!unresolved.is_operator());
+    assert!(!unresolved.can_access_area(Area::Ci));
+    assert_eq!(unresolved.badge_label(), "CONNECTING");
+
     let anon = AuthState::from_session(&AuthSessionDto::default());
-    assert_eq!(anon, AuthState::Anonymous);
+    assert_eq!(anon.status, AuthStatus::Anonymous);
+    assert!(anon.anonymous_lockdown);
     assert!(!anon.is_operator());
+    assert!(!anon.can_access_area(Area::Ci));
     assert_eq!(anon.badge_label(), "READ-ONLY");
 
-    let uninvited = AuthState::from_session(&AuthSessionDto {
+    // Zero invite disclosure: authenticated account without bound role is denied cleanly.
+    let denied = AuthState::from_session(&AuthSessionDto {
         authenticated: false,
         github_login: Some("guest-dev".into()),
         invite_bound: false,
-        role: None,
+        reason_code: Some(AuthReasonCode::AuthorizationDenied),
+        ..AuthSessionDto::default()
     });
+    assert_eq!(denied.status, AuthStatus::AuthorizationDenied);
     assert_eq!(
-        uninvited,
-        AuthState::InviteRequired {
-            github_login: "guest-dev".into()
-        }
+        denied.reason_code,
+        Some(AuthReasonCode::AuthorizationDenied)
     );
-    assert!(!uninvited.is_operator());
-    assert_eq!(uninvited.badge_label(), "INVITE REQ (@guest-dev)");
+    assert!(!denied.is_operator());
+    assert!(!denied.can_access_area(Area::Platform));
+    assert_eq!(denied.badge_label(), "DENIED (@guest-dev)");
+
+    // Bound account with zero Passkeys blocks baseline activation until enrolled.
+    let enroll_gate = AuthState::from_session(&AuthSessionDto {
+        authenticated: true,
+        github_login: Some("new-op".into()),
+        invite_bound: true,
+        passkey_count: 0,
+        passkey_enrollment_required: true,
+        baseline_role: Some("operator".into()),
+        active_policies: alloc::vec!["ci:jobs:read".into()],
+        ..AuthSessionDto::default()
+    });
+    assert_eq!(enroll_gate.status, AuthStatus::PasskeyEnrollmentRequired);
+    assert!(enroll_gate.passkey_enrollment_required);
+    assert!(!enroll_gate.is_operator());
+    assert!(!enroll_gate.can_access_area(Area::Ci));
 
     let op = AuthState::from_session(&AuthSessionDto {
         authenticated: true,
         github_login: Some("LMA1980".into()),
         invite_bound: true,
+        passkey_count: 2,
+        baseline_role: Some("operator".into()),
         role: Some("admin".into()),
+        bound_roles: alloc::vec!["operator".into(), "admin".into()],
+        active_policies: alloc::vec!["ci:jobs:read".into(), "mr:status:read".into()],
+        ..AuthSessionDto::default()
     });
-    assert_eq!(
-        op,
-        AuthState::Operator {
-            github_login: "LMA1980".into(),
-            role: Some("admin".into()),
-        }
-    );
+    assert_eq!(op.status, AuthStatus::Active);
+    assert_eq!(op.passkey_count, 2);
     assert!(op.is_operator());
+    assert!(op.has_policy("ci:jobs:read"));
+    assert!(op.can_access_area(Area::Ci));
+    assert!(op.can_access_area(Area::ModelRunner));
+    assert!(!op.can_access_area(Area::Platform));
     assert_eq!(op.badge_label(), "@LMA1980");
 
     for cmd in [
@@ -475,11 +627,24 @@ fn auth_state_and_commands_round_trip_through_postcard() {
             authenticated: true,
             github_login: Some("LMA1980".into()),
             invite_bound: true,
+            passkey_count: 1,
             role: Some("operator".into()),
+            ..AuthSessionDto::default()
         }),
         UiCommand::RestartJob { job_id: 42 },
         UiCommand::ResumeJob { job_id: 42 },
         UiCommand::SelectJob { job_id: 42 },
+        UiCommand::EnableRole {
+            role_id: "operator".into(),
+        },
+        UiCommand::ElevateWithPasskey {
+            role_id: "admin".into(),
+            assertion_json: "{}".into(),
+        },
+        UiCommand::TriggerAbRollback {
+            deployment_id: "dep-1".into(),
+            note: None,
+        },
     ] {
         let bytes = encode(&cmd).expect("encode cmd");
         assert_eq!(decode::<UiCommand>(&bytes), Ok(cmd));
@@ -516,11 +681,13 @@ fn queue_item_view_unwrapping_ansi_log_sanitization_and_paths() {
                 name: "Verify Rust Formatting".into(),
                 assigned_node: Some("worker-riscv64".into()),
                 threads: 6,
+                skip_reason: None,
                 status: CiQueueStageStatusDto {
                     state: "Completed".into(),
                     details: CiQueueStageDetailsDto {
                         duration_secs: 4,
                         exit_code: 0,
+                        skip_reason: None,
                     },
                 },
             }],
@@ -675,15 +842,18 @@ fn test_ingress_subview_dtos_and_paths() {
 
     assert_eq!(ObserveSubView::ALL.len(), 7);
     assert_eq!(ObserveSubView::ALL[6], ObserveSubView::Ingress);
-    assert_eq!(SubView::Observe(ObserveSubView::Ingress).slug(), "ingress");
     assert_eq!(
-        SubView::Observe(ObserveSubView::Ingress).label(),
+        SubView::Observability(ObserveSubView::Ingress).slug(),
+        "ingress"
+    );
+    assert_eq!(
+        SubView::Observability(ObserveSubView::Ingress).label(),
         "Ingress & Edge"
     );
 
-    let all_obs = SubView::all_for(Area::Observe);
+    let all_obs = SubView::all_for(Area::Observability);
     assert_eq!(all_obs.len(), 7);
-    assert_eq!(all_obs[6], SubView::Observe(ObserveSubView::Ingress));
+    assert_eq!(all_obs[6], SubView::Observability(ObserveSubView::Ingress));
 
     assert_eq!(paths::OBS_EVENTS, "/api/obs/v1/events");
     assert_eq!(paths::OBS_INGRESS_OVERVIEW, "/api/obs/v1/ingress/overview");
@@ -804,4 +974,285 @@ fn test_causal_rca_problem_dto_and_slo_problem() {
     let serialized = postcard::to_allocvec(&view).expect("serialize view");
     let deserialized: SloProblem = postcard::from_bytes(&serialized).expect("deserialize view");
     assert_eq!(deserialized, view);
+}
+
+#[test]
+fn protocol_v6_routes_legacy_aliases_and_all_eight_areas() {
+    assert_eq!(Area::ALL.len(), 8);
+    assert_eq!(Area::Platform.slug(), "platform");
+    assert_eq!(Area::AbDeploy.slug(), "ab-deploy");
+    assert_eq!(Area::ModelRunner.slug(), "model-runner");
+    assert_eq!(Area::from_slug("ab"), Some(Area::AbDeploy));
+    assert_eq!(Area::from_slug("mr"), Some(Area::ModelRunner));
+
+    // Every Area maps bijectively to a unique SubsystemId.
+    let mut subsystems: Vec<SubsystemId> = Area::ALL.iter().map(|a| a.subsystem()).collect();
+    subsystems.sort();
+    subsystems.dedup();
+    assert_eq!(subsystems.len(), 8);
+
+    // Canonical v6 round-trip.
+    for area in Area::ALL {
+        for sv in SubView::all_for(area) {
+            let route = Route::for_subview(*sv);
+            let hash = route.to_hash();
+            let parsed = Route::try_from_hash(&hash).expect("canonical route parses");
+            assert_eq!(parsed, route);
+        }
+    }
+
+    // Legacy hash routes rewrite cleanly into Protocol v6 targets.
+    assert_eq!(
+        Route::try_from_hash("#/iam").expect("iam").subview,
+        SubView::Platform(PlatformSubView::Maintenance)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/iam/users")
+            .expect("iam users")
+            .subview,
+        SubView::Platform(PlatformSubView::UsersAndInvites)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/fleet").expect("fleet").subview,
+        SubView::Ci(CiSubView::WorkerNodes)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/fleet/sandboxes")
+            .expect("fleet sandboxes")
+            .subview,
+        SubView::Ci(CiSubView::SandboxProfiles)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/cd/gate").expect("cd gate").subview,
+        SubView::AbDeploy(AbDeploySubView::IntegrationGate)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/cd/deployments")
+            .expect("cd deployments")
+            .subview,
+        SubView::AbDeploy(AbDeploySubView::DeploymentsSlots)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/cd/leases")
+            .expect("cd leases")
+            .subview,
+        SubView::AbDeploy(AbDeploySubView::ActiveLeases)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/registry")
+            .expect("registry")
+            .subview,
+        SubView::Repository(RepositorySubView::Packages)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/observe").expect("observe").subview,
+        SubView::Observability(ObservabilitySubView::Smartscape)
+    );
+    assert!(Route::try_from_hash("#/unknown/view").is_none());
+}
+
+#[test]
+fn protocol_v6_skins_dialogs_leases_and_header_budget() {
+    assert_eq!(ConsoleSkin::default(), ConsoleSkin::Html);
+    assert_eq!(
+        ConsoleSkin::ALL,
+        [ConsoleSkin::Html, ConsoleSkin::Wireframe]
+    );
+    assert_eq!(ViewModel::default().max_active_roles_header_chars, 120);
+
+    let blocking = DialogModel::PasskeyEnrollmentGate(PasskeyEnrollmentGateModel {
+        github_login: "alice".into(),
+        passkey_count: 0,
+        reason_code: Some(AuthReasonCode::PasskeyEnrollmentRequired),
+    });
+    assert!(!blocking.is_dismissible());
+    assert_eq!(blocking.kind(), "passkey-enrollment-gate");
+
+    let profile = DialogModel::UserProfile(UserProfileDialogModel::default());
+    assert!(profile.is_dismissible());
+    assert_eq!(profile.kind(), "user-profile");
+
+    let confirm = DialogModel::RiskConfirm(RiskConfirmDialogModel {
+        action: RiskConfirmAction::TriggerAbRollback {
+            deployment_id: "dep-9".into(),
+            repo: RepoId::new("LMA1980", "sample"),
+            target_node: "node-a".into(),
+            current_slot: Slot::B,
+            restore_slot: Slot::A,
+            note: Some("canary spike".into()),
+        },
+        confirmation_phrase: Some("dep-9".into()),
+        typed_confirmation: String::new(),
+    });
+    assert!(confirm.is_dismissible());
+    assert_eq!(confirm.kind(), "risk-confirm");
+
+    let mut lease = RoleLeaseView {
+        role_id: "admin".into(),
+        activated_at_ms: 1_000,
+        last_activity_at_ms: 1_000,
+        hard_expires_at_ms: 91_000,
+        idle_expires_at_ms: 31_000,
+        hard_ttl_secs: 90,
+        idle_ttl_secs: 30,
+        seconds_remaining: 90,
+        idle_timer: 30,
+        ..RoleLeaseView::default()
+    };
+    assert!(lease.tick_at(16_000));
+    assert_eq!(
+        RoleLeaseView::format_mm_ss(lease.seconds_remaining),
+        "01:15"
+    );
+    assert_eq!(RoleLeaseView::format_mm_ss(lease.idle_timer), "00:15");
+    assert!(!lease.tick_at(31_000));
+    assert!(lease.is_expired());
+    assert_eq!(RoleLeaseView::format_mm_ss(lease.idle_timer), "00:00");
+}
+
+#[test]
+fn protocol_v6_mu_auth_mirrors_health_cd_mr_and_paths() {
+    use crate::dto::{
+        paths, AuditActivityEntryDto, CiQueueJobSpecDto, CiQueueStageDetailsDto, CiQueueStageDto,
+        CiQueueStageStatusDto, PolicyDto, SubsystemStatusEntryDto,
+    };
+
+    // RoleActivation variants + mu-auth type aliases round-trip through postcard.
+    let role: RoleSpec = RoleSpecDto {
+        id: "release-eng".into(),
+        display_name: Some("Release Engineer".into()),
+        description: "Operates CD & A/B rollbacks".into(),
+        activation: RoleActivationDto::timed(1_800, 900),
+        step_up: StepUpRequirement::Passkey,
+    };
+    assert_eq!(role.effective_display_name(), "Release Engineer");
+    let raw_role = postcard::to_allocvec(&role).expect("serialize role");
+    let decoded_role: RoleSpec = postcard::from_bytes(&raw_role).expect("decode role");
+    assert_eq!(decoded_role, role);
+
+    let folio: PolicyFolio = PolicyFolioDto {
+        id: "folio:ops:cd".into(),
+        display_name: "CD Operations".into(),
+        description: String::new(),
+        origin: FolioOrigin::Operator,
+        owner_subsystem: None,
+        includes: alloc::vec!["folio:cd:read".into()],
+        policies: alloc::vec!["cd:runs:read".into(), "ab:deploy:rollback".into()],
+    };
+    let mut index = RoleFolioIndex::default();
+    index
+        .role_folios
+        .insert("release-eng".into(), alloc::vec![folio.id.clone()]);
+    let snap = PlatformSnapshotDto {
+        subsystems: Vec::new(),
+        users: Vec::new(),
+        invites: Vec::new(),
+        roles: alloc::vec![role],
+        folios: alloc::vec![folio],
+        policies: alloc::vec![PolicyDto {
+            id: "cd:runs:read".into(),
+            subsystem: SubsystemId::Cd,
+            description: "Read CD pipeline runs".into(),
+        }],
+        role_folio_index: index,
+        recent_activity: alloc::vec![AuditActivityEntryDto {
+            timestamp_ms: 1_700_000_000_000,
+            actor: "alice".into(),
+            action: "role.elevate".into(),
+            target: Some("release-eng".into()),
+            outcome: "ok".into(),
+        }],
+    };
+    let raw_snap = postcard::to_allocvec(&snap).expect("serialize platform snapshot");
+    let decoded_snap: PlatformSnapshotDto =
+        postcard::from_bytes(&raw_snap).expect("decode platform snapshot");
+    assert_eq!(decoded_snap, snap);
+
+    // 7-subsystem health aggregation + overall status rollup.
+    let entries = [
+        SubsystemStatusEntryDto {
+            subsystem: SubsystemId::Ci,
+            effective_status: SubsystemStatus::Live,
+            probe_status: SubsystemStatus::Live,
+            updated_at_ms: 10,
+            ..SubsystemStatusEntryDto::default()
+        },
+        SubsystemStatusEntryDto {
+            subsystem: SubsystemId::Cd,
+            effective_status: SubsystemStatus::InMaintenance,
+            probe_status: SubsystemStatus::Live,
+            mode: MaintenanceMode::Manual(SubsystemStatus::InMaintenance),
+            summary: "upgrade".into(),
+            updated_at_ms: 25,
+            ..SubsystemStatusEntryDto::default()
+        },
+    ];
+    let health = SubsystemHealthSummary::from_entries(&entries);
+    assert_eq!(health.entries().len(), 7);
+    assert_eq!(health.ci.status, SubsystemStatus::Live);
+    assert_eq!(health.cd.status, SubsystemStatus::InMaintenance);
+    assert_eq!(health.updated_at_ms, 25);
+    assert_eq!(health.overall_status(), SubsystemStatus::PartialMaintenance);
+
+    // Structured stage skip_reason precedence.
+    let spec = CiQueueJobSpecDto::default();
+    assert_eq!(spec.id, "");
+    let skipped = CiQueueStageDto {
+        id: "rvv-mat".into(),
+        name: "A100 Matrix Bench".into(),
+        skip_reason: None,
+        status: CiQueueStageStatusDto {
+            state: "Skipped".into(),
+            details: CiQueueStageDetailsDto {
+                skip_reason: Some(SkipReason::NoCapableWorkerNode {
+                    capability: Some("kva23".into()),
+                }),
+                ..CiQueueStageDetailsDto::default()
+            },
+        },
+        ..CiQueueStageDto::default()
+    };
+    assert_eq!(
+        skipped.effective_skip_reason(),
+        Some(&SkipReason::NoCapableWorkerNode {
+            capability: Some("kva23".into())
+        })
+    );
+
+    // Ecosystem-agnostic CD runs & ModelRunner DTO round-trip.
+    for eco in [
+        CdEcosystem::Cargo,
+        CdEcosystem::DotNet,
+        CdEcosystem::Maven,
+        CdEcosystem::Custom("python".into()),
+    ] {
+        let run = CdRunDto {
+            run_id: format!("run-{}", eco.as_str()),
+            ecosystem: eco.clone(),
+            repo: RepoId::new("LMA1980", "sample"),
+            state: CdRunState::Running,
+            ..CdRunDto::default()
+        };
+        let bytes = postcard::to_allocvec(&run).expect("serialize cd run");
+        let back: CdRunDto = postcard::from_bytes(&bytes).expect("decode cd run");
+        assert_eq!(back, run);
+    }
+
+    assert_eq!(paths::CD_RUNS, "/api/cd/runs");
+    assert_eq!(
+        paths::cd_runs("LMA1980", "mu-console", Some("cargo"), 25),
+        "/api/cd/runs?repo=LMA1980%2Fmu-console&ecosystem=cargo&limit=25"
+    );
+    assert_eq!(
+        paths::ab_rollback("dep-1"),
+        "/api/cd/deployments/dep-1/rollback"
+    );
+    assert_eq!(paths::MR_STATUS, "/api/mr/v1/status");
+    assert_eq!(paths::MR_CONNECTION, "/api/mr/v1/connection");
+    assert_eq!(
+        paths::subsystem_maintenance(SubsystemId::ModelRunner),
+        "/api/obs/v1/status/subsystems/model_runner/maintenance"
+    );
+    assert_eq!(paths::AUTH_PROFILE, "/api/auth/profile");
+    assert_eq!(paths::AUTH_ROLE_LOCK, "/api/auth/roles/lock");
 }

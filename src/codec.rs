@@ -11,8 +11,10 @@ use serde::{de::DeserializeOwned, Serialize};
 ///
 /// History: 1 = Phase 1 skeleton; 2 = Phase 2 data plane (full view models);
 /// 3 = Phase 3 live node telemetry & CI queue; 4 = skin switcher & job restart POST;
-/// 5 = Live workflow parity (QueueItemView unwrapping, per-job detail/log, ResumeJob, submodules).
-pub const PROTOCOL_VERSION: u32 = 5;
+/// 5 = Live workflow parity (QueueItemView unwrapping, per-job detail/log, ResumeJob, submodules);
+/// 6 = Html & Wireframe skins, 8 role-gated areas, DialogModel, mu-auth folios/leases,
+/// SubsystemHealthSummary, ecosystem-agnostic CdRunDto & Model-Runner DTOs.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Codec failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,8 +90,7 @@ pub fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::*;
-    use crate::view::*;
+    use crate::*;
     use alloc::string::ToString;
     use alloc::vec;
 
@@ -116,7 +117,7 @@ mod tests {
                 trace_id: Some("tr-ci-1234".to_string()),
                 filter: Some("ERRORS".to_string()),
             }),
-            UiCommand::SelectSubView(SubView::Observe(ObserveSubView::PurePath)),
+            UiCommand::SelectSubView(SubView::Observability(ObserveSubView::PurePath)),
             UiCommand::ResetStream,
             UiCommand::SelectRepo {
                 repo: repo("LMA1980", "model-runner"),
@@ -136,10 +137,46 @@ mod tests {
             UiCommand::SetVisibility { hidden: true },
             UiCommand::SetCrtFont(CrtFont::Hurmit),
             UiCommand::SetCrtFont(CrtFont::OpenDyslexic),
+            UiCommand::SetSkin(ConsoleSkin::Html),
             UiCommand::SetSkin(ConsoleSkin::Wireframe),
             UiCommand::RestartJob { job_id: 101 },
             UiCommand::ResumeJob { job_id: 102 },
             UiCommand::SelectJob { job_id: 103 },
+            UiCommand::EnableRole {
+                role_id: "operator".to_string(),
+            },
+            UiCommand::DisableRole {
+                role_id: "operator".to_string(),
+            },
+            UiCommand::ElevateWithPasskey {
+                role_id: "admin".to_string(),
+                assertion_json: "{}".to_string(),
+            },
+            UiCommand::LockTimedRoles,
+            UiCommand::RecordUserActivity,
+            UiCommand::UpdateUserProfile {
+                display_name: Some("Operator".to_string()),
+                preferred_skin: Some(ConsoleSkin::Html),
+                preferred_font: Some(CrtFont::Hurmit),
+            },
+            UiCommand::OpenDialog(DialogModel::PasskeyEnrollmentGate(
+                PasskeyEnrollmentGateModel {
+                    github_login: "lma".to_string(),
+                    passkey_count: 0,
+                    reason_code: Some(AuthReasonCode::PasskeyEnrollmentRequired),
+                },
+            )),
+            UiCommand::CloseDialog,
+            UiCommand::TriggerAbRollback {
+                deployment_id: "dep-42".to_string(),
+                note: Some("canary error spike".to_string()),
+            },
+            UiCommand::SetSubsystemMaintenance {
+                subsystem: SubsystemId::Cd,
+                mode: MaintenanceMode::Manual(SubsystemStatus::InMaintenance),
+                reason: Some("schema rollout".to_string()),
+                auto_clear_secs: Some(300),
+            },
         ]
     }
 
@@ -178,12 +215,16 @@ mod tests {
                 message: "upstream".to_string(),
             }),
             DataEvent::Error(UiError::UnknownScenario("nope".to_string())),
+            DataEvent::Error(UiError::AuthDenied(AuthReasonCode::AuthorizationDenied)),
             DataEvent::AreaBadges(AreaBadges {
+                dashboard: 0,
                 ci: 2,
                 cd: 1,
-                registry: 1,
-                observe: 2,
-                fleet: 1,
+                ab_deploy: 1,
+                repository: 1,
+                observability: 2,
+                model_runner: 0,
+                platform: 1,
             }),
             DataEvent::Heartbeat { seq: 7 },
         ]
@@ -263,10 +304,13 @@ mod tests {
 
     #[test]
     fn rejects_removed_skin_discriminant() {
-        let mut frame = encode(&UiCommand::SetSkin(ConsoleSkin::Wireframe)).expect("encode");
+        let html_frame = encode(&UiCommand::SetSkin(ConsoleSkin::Html)).expect("encode html");
+        assert_eq!(*html_frame.last().expect("skin discriminant byte"), 0);
+        let mut frame =
+            encode(&UiCommand::SetSkin(ConsoleSkin::Wireframe)).expect("encode wireframe");
         let last = frame.last_mut().expect("skin discriminant byte");
-        assert_eq!(*last, 0);
-        *last = 1;
+        assert_eq!(*last, 1);
+        *last = 2;
         assert_eq!(decode::<UiCommand>(&frame), Err(CodecError::Decode));
     }
 }
