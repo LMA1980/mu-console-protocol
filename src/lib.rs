@@ -33,6 +33,16 @@ mod tests;
 
 pub use codec::{decode, encode, peek_version, CodecError, PROTOCOL_VERSION};
 pub use config::{WorkerConfig, LIVE_SCENARIO};
-pub use dto::format_job_id;
+pub use dto::{
+    format_job_id, AbRollbackRequestDto, AbRollbackResponseDto, AuditActivityEntryDto, CdEcosystem,
+    CdRunDto, CdRunFailurePinpointDto, CdRunState, CdStepDto, CreatedInviteResponseDto,
+    FolioOrigin, InviteRecordDto, MaintenanceMode, MaintenanceOverride, MaintenanceOverrideDto,
+    ModelRunnerConnectionDto, ModelRunnerStatusDto, PasskeySummaryDto, PlatformSnapshotDto,
+    PlatformUserDto, PolicyDto, PolicyFolio, PolicyFolioDto, ResidentModelStatusDto,
+    RoleActivation, RoleActivationDto, RoleActivationKind, RoleFolioIndex, RoleFolioIndexDto,
+    RoleSpec, RoleSpecDto, StepUpRequirement, SubsystemHealthEntry, SubsystemHealthSummary,
+    SubsystemId, SubsystemSecurityManifestDto, SubsystemStatus, SubsystemStatusChangedDto,
+    SubsystemStatusEntryDto, UserPreferencesDto, UserProfileDto, WireGuardPeerSummaryDto,
+};
 pub use model::*;
 pub use view::*;
