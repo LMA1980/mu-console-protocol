@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     AuthSessionDto, CdRunDto, IngressRouteDto, IngressUpstreamDto, ModelRunnerConnectionDto,
-    ModelRunnerStatusDto, PlatformSnapshotDto, RoleActivationDto, SubsystemHealthSummary,
-    TlsHealthDto, UserProfileDto,
+    ModelRunnerStatusDto, PlatformSnapshotDto, RoleActivationDto, RoleSpecDto,
+    SubsystemHealthSummary, TlsHealthDto, UserProfileDto,
 };
 use crate::model::{
     Area, AuthReasonCode, DialogModel, RepoId, RoleLeaseView, SkipReason, SubmoduleId,
@@ -1101,6 +1101,8 @@ pub struct AuthState {
     #[serde(default)]
     pub bound_roles: Vec<String>,
     #[serde(default)]
+    pub bound_role_specs: Vec<RoleSpecDto>,
+    #[serde(default)]
     pub active_roles: Vec<RoleBadgeView>,
     #[serde(default)]
     pub leases: Vec<RoleLeaseView>,
@@ -1192,6 +1194,7 @@ impl AuthState {
                 anonymous_lockdown: dto.anonymous_lockdown,
                 baseline_role: dto.baseline_role.clone(),
                 bound_roles: dto.bound_roles.clone(),
+                bound_role_specs: dto.bound_role_specs.clone(),
                 active_roles: Vec::new(),
                 leases: Vec::new(),
                 active_folios,
@@ -1233,6 +1236,7 @@ impl AuthState {
             anonymous_lockdown: false,
             baseline_role: dto.baseline_role.clone().or_else(|| dto.role.clone()),
             bound_roles: dto.bound_roles.clone(),
+            bound_role_specs: dto.bound_role_specs.clone(),
             active_roles,
             leases: dto.leases.clone(),
             active_folios: dto.active_folios.clone(),
@@ -1261,6 +1265,69 @@ impl AuthState {
                 | AuthStatus::PasskeyEnrollmentRequired
                 | AuthStatus::Active
         )
+    }
+
+    /// Derive complete `SessionRoleDescriptor` rows for `+role` by combining server-provided
+    /// `bound_role_specs`, `bound_roles`, `active_roles`, and `leases`.
+    #[must_use]
+    pub fn session_role_descriptors(&self) -> Vec<crate::model::SessionRoleDescriptor> {
+        let mut ids: Vec<String> = Vec::new();
+        for r in &self.bound_roles {
+            if !ids.iter().any(|existing| existing == r) {
+                ids.push(r.clone());
+            }
+        }
+        for spec in &self.bound_role_specs {
+            if !ids.iter().any(|existing| existing == &spec.id) {
+                ids.push(spec.id.clone());
+            }
+        }
+        for active in &self.active_roles {
+            if !ids.iter().any(|existing| existing == &active.role_id) {
+                ids.push(active.role_id.clone());
+            }
+        }
+
+        let mut descriptors = Vec::with_capacity(ids.len());
+        for role_id in ids {
+            let active_badge = self.active_roles.iter().find(|b| b.role_id == role_id);
+            let active_lease = self
+                .leases
+                .iter()
+                .find(|l| l.role_id == role_id)
+                .cloned()
+                .or_else(|| active_badge.and_then(|b| b.lease.clone()));
+            let spec = self.bound_role_specs.iter().find(|s| s.id == role_id);
+
+            let (display_name, description, activation, step_up) = if let Some(spec) = spec {
+                (
+                    spec.display_name.clone(),
+                    spec.description.clone(),
+                    spec.activation,
+                    spec.step_up,
+                )
+            } else {
+                fallback_role_metadata(&role_id, active_badge, self.baseline_role.as_deref())
+            };
+
+            let active = active_badge.is_some()
+                || active_lease.as_ref().is_some_and(|l| !l.is_expired())
+                || self.baseline_role.as_deref() == Some(role_id.as_str());
+            let requires_step_up = matches!(activation.kind, crate::dto::RoleActivationKind::Timed)
+                || step_up == crate::dto::StepUpRequirement::Passkey;
+
+            descriptors.push(crate::model::SessionRoleDescriptor {
+                role_id,
+                display_name,
+                description,
+                activation,
+                step_up,
+                active,
+                lease: active_lease,
+                step_up_verified: active && requires_step_up,
+            });
+        }
+        descriptors
     }
 
     /// Return `true` if `policy` is granted in the active effective policy set.
@@ -1301,6 +1368,51 @@ impl AuthState {
                 }
             }
         }
+    }
+}
+
+fn fallback_role_metadata(
+    role_id: &str,
+    active_badge: Option<&RoleBadgeView>,
+    baseline_role: Option<&str>,
+) -> (
+    Option<String>,
+    String,
+    RoleActivationDto,
+    crate::dto::StepUpRequirement,
+) {
+    match role_id {
+        "super-operator" => (
+            Some("Super Operator".into()),
+            "All-access Passkey role (2m idle, 15m session, single +15m last-2m renewal)".into(),
+            RoleActivationDto::super_operator(),
+            crate::dto::StepUpRequirement::Passkey,
+        ),
+        "platform-admin" => (
+            Some("Platform Administrator".into()),
+            "Short-lived step-up role for platform RBAC, folios, invites, and resets.".into(),
+            RoleActivationDto::timed(900, 300),
+            crate::dto::StepUpRequirement::Passkey,
+        ),
+        "ci-operator" => (
+            Some("CI Operator".into()),
+            "Elective role granting CI queue control and HA failover actions.".into(),
+            RoleActivationDto::elective(),
+            crate::dto::StepUpRequirement::None,
+        ),
+        _ if baseline_role == Some(role_id) || role_id == "operator" => (
+            Some("Baseline Operator".into()),
+            "Canonical baseline console operator access; always active after passkey enrollment."
+                .into(),
+            RoleActivationDto::pinned_baseline(),
+            crate::dto::StepUpRequirement::None,
+        ),
+        _ => (
+            active_badge.and_then(|b| b.display_name.clone()),
+            String::new(),
+            active_badge.map_or_else(RoleActivationDto::elective, |b| b.activation),
+            crate::dto::StepUpRequirement::None,
+        ),
     }
 }
 
