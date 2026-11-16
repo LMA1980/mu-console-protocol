@@ -1169,19 +1169,33 @@ impl AuthState {
             .or_else(|| Some("operator".into()));
 
         if dto.passkey_enrollment_required || dto.passkey_count == 0 {
+            let active_folios = if dto.anonymous_lockdown {
+                Vec::new()
+            } else {
+                dto.active_folios.clone()
+            };
+            let active_policies = if dto.anonymous_lockdown {
+                Vec::new()
+            } else {
+                alloc::vec![
+                    "system:status.read".into(),
+                    "ci:queue.read".into(),
+                    "ci:repos.public.read".into(),
+                ]
+            };
             return Self {
                 status: AuthStatus::PasskeyEnrollmentRequired,
                 github_login: login,
                 passkey_count: dto.passkey_count,
                 passkey_enrollment_required: true,
                 reason_code: Some(AuthReasonCode::PasskeyEnrollmentRequired),
-                anonymous_lockdown: false,
+                anonymous_lockdown: dto.anonymous_lockdown,
                 baseline_role: dto.baseline_role.clone(),
                 bound_roles: dto.bound_roles.clone(),
                 active_roles: Vec::new(),
                 leases: Vec::new(),
-                active_folios: Vec::new(),
-                active_policies: Vec::new(),
+                active_folios,
+                active_policies,
             };
         }
 
@@ -1253,7 +1267,7 @@ impl AuthState {
     #[must_use]
     pub fn has_policy(&self, policy: &str) -> bool {
         self.is_resolved()
-            && !self.passkey_enrollment_required
+            && !self.anonymous_lockdown
             && self.active_policies.iter().any(|p| p == policy)
     }
 
@@ -1261,7 +1275,7 @@ impl AuthState {
     /// an [`Area`] is enabled if and only if at least one policy under its subsystem prefix is active.
     #[must_use]
     pub fn can_access_area(&self, area: Area) -> bool {
-        if !self.is_resolved() || self.passkey_enrollment_required {
+        if !self.is_resolved() || self.anonymous_lockdown {
             return false;
         }
         let prefix = area.subsystem().policy_prefix();
