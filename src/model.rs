@@ -1042,10 +1042,11 @@ impl DialogModel {
         }
     }
 
-    /// `false` for blocking [`DialogModel::PasskeyEnrollmentGate`]; `true` for all dismissible modals.
+    /// Return `true` for dismissible modals (`PasskeyEnrollmentGate` is dismissible so 0-passkey
+    /// users can browse baseline public Dashboard and CI views before completing enrollment).
     #[must_use]
     pub const fn is_dismissible(&self) -> bool {
-        !matches!(self, Self::PasskeyEnrollmentGate(_))
+        true
     }
 }
 

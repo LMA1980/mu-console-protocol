@@ -583,7 +583,8 @@ fn auth_state_and_commands_round_trip_through_postcard() {
     assert!(!denied.can_access_area(Area::Platform));
     assert_eq!(denied.badge_label(), "DENIED (@guest-dev)");
 
-    // Bound account with zero Passkeys blocks baseline activation until enrolled.
+    // Bound account with zero Passkeys preserves baseline public read access unless
+    // anonymous_lockdown is enabled, while withholding operator/step-up privileges.
     let enroll_gate = AuthState::from_session(&AuthSessionDto {
         authenticated: true,
         github_login: Some("new-op".into()),
@@ -597,7 +598,26 @@ fn auth_state_and_commands_round_trip_through_postcard() {
     assert_eq!(enroll_gate.status, AuthStatus::PasskeyEnrollmentRequired);
     assert!(enroll_gate.passkey_enrollment_required);
     assert!(!enroll_gate.is_operator());
-    assert!(!enroll_gate.can_access_area(Area::Ci));
+    assert!(enroll_gate.can_access_area(Area::Dashboard));
+    assert!(enroll_gate.can_access_area(Area::Ci));
+    assert!(enroll_gate.has_policy("ci:repos.public.read"));
+    assert!(!enroll_gate.has_policy("ci:jobs:read"));
+    assert!(!enroll_gate.can_access_area(Area::Platform));
+
+    let locked_gate = AuthState::from_session(&AuthSessionDto {
+        authenticated: true,
+        github_login: Some("new-op".into()),
+        invite_bound: true,
+        passkey_count: 0,
+        passkey_enrollment_required: true,
+        anonymous_lockdown: true,
+        baseline_role: Some("operator".into()),
+        ..AuthSessionDto::default()
+    });
+    assert_eq!(locked_gate.status, AuthStatus::PasskeyEnrollmentRequired);
+    assert!(locked_gate.anonymous_lockdown);
+    assert!(locked_gate.active_policies.is_empty());
+    assert!(!locked_gate.can_access_area(Area::Ci));
 
     let op = AuthState::from_session(&AuthSessionDto {
         authenticated: true,
@@ -1060,13 +1080,13 @@ fn protocol_v6_skins_dialogs_leases_and_header_budget() {
     );
     assert_eq!(ViewModel::default().max_active_roles_header_chars, 120);
 
-    let blocking = DialogModel::PasskeyEnrollmentGate(PasskeyEnrollmentGateModel {
+    let guiding = DialogModel::PasskeyEnrollmentGate(PasskeyEnrollmentGateModel {
         github_login: "alice".into(),
         passkey_count: 0,
         reason_code: Some(AuthReasonCode::PasskeyEnrollmentRequired),
     });
-    assert!(!blocking.is_dismissible());
-    assert_eq!(blocking.kind(), "passkey-enrollment-gate");
+    assert!(guiding.is_dismissible());
+    assert_eq!(guiding.kind(), "passkey-enrollment-gate");
 
     let profile = DialogModel::UserProfile(UserProfileDialogModel::default());
     assert!(profile.is_dismissible());
