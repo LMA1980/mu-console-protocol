@@ -13,8 +13,9 @@ use serde::{de::DeserializeOwned, Serialize};
 /// 3 = Phase 3 live node telemetry & CI queue; 4 = skin switcher & job restart POST;
 /// 5 = Live workflow parity (QueueItemView unwrapping, per-job detail/log, ResumeJob, submodules);
 /// 6 = Html & Wireframe skins, 8 role-gated areas, DialogModel, mu-auth folios/leases,
-/// SubsystemHealthSummary, ecosystem-agnostic CdRunDto & Model-Runner DTOs.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// SubsystemHealthSummary, ecosystem-agnostic CdRunDto & Model-Runner DTOs;
+/// 7 = RoleLeaseView renewal metadata, AuthSessionDto::bound_role_specs, RenewRoleWithPasskey.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Codec failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +151,10 @@ mod tests {
             },
             UiCommand::ElevateWithPasskey {
                 role_id: "admin".to_string(),
+                assertion_json: "{}".to_string(),
+            },
+            UiCommand::RenewRoleWithPasskey {
+                role_id: "super-operator".to_string(),
                 assertion_json: "{}".to_string(),
             },
             UiCommand::LockTimedRoles,

@@ -1128,6 +1128,54 @@ fn protocol_v6_skins_dialogs_leases_and_header_budget() {
     assert!(!lease.tick_at(31_000));
     assert!(lease.is_expired());
     assert_eq!(RoleLeaseView::format_mm_ss(lease.idle_timer), "00:00");
+
+    // Super-operator renewable lease computes can_renew strictly in final 2m when renewals remain.
+    let mut super_lease = RoleLeaseView {
+        role_id: "super-operator".into(),
+        activated_at_ms: 0,
+        last_activity_at_ms: 779_000,
+        hard_expires_at_ms: 900_000,
+        idle_expires_at_ms: 899_000,
+        hard_ttl_secs: 900,
+        idle_ttl_secs: 120,
+        renew_window_secs: 120,
+        renew_extend_secs: 900,
+        max_renewals: 1,
+        renewals_used: 0,
+        ..RoleLeaseView::default()
+    };
+    assert!(super_lease.tick_at(779_000));
+    assert!(!super_lease.can_renew);
+    assert!(super_lease.tick_at(780_000));
+    assert!(super_lease.can_renew);
+    super_lease.renewals_used = 1;
+    super_lease.hard_expires_at_ms = 1_800_000;
+    assert!(super_lease.tick_at(780_000));
+    assert!(!super_lease.can_renew);
+
+    let session = crate::dto::AuthSessionDto {
+        authenticated: true,
+        github_login: Some("LMA1980".into()),
+        invite_bound: true,
+        passkey_count: 1,
+        baseline_role: Some("operator".into()),
+        bound_roles: alloc::vec!["operator".into(), "super-operator".into()],
+        bound_role_specs: alloc::vec![RoleSpecDto {
+            id: "super-operator".into(),
+            display_name: Some("Super Operator".into()),
+            description: "All-access Passkey role".into(),
+            activation: RoleActivationDto::super_operator(),
+            step_up: StepUpRequirement::Passkey,
+        }],
+        leases: alloc::vec![super_lease],
+        ..crate::dto::AuthSessionDto::default()
+    };
+    let auth_state = AuthState::from_session(&session);
+    let descriptors = auth_state.session_role_descriptors();
+    assert_eq!(descriptors.len(), 2);
+    assert!(descriptors
+        .iter()
+        .any(|d| d.role_id == "super-operator" && d.activation.max_renewals == 1));
 }
 
 #[test]

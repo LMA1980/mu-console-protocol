@@ -1481,6 +1481,8 @@ pub struct AuthSessionDto {
     #[serde(default, deserialize_with = "null_default")]
     pub bound_roles: Vec<String>,
     #[serde(default, deserialize_with = "null_default")]
+    pub bound_role_specs: Vec<RoleSpecDto>,
+    #[serde(default, deserialize_with = "null_default")]
     pub active_roles: Vec<RoleSpecDto>,
     #[serde(default, deserialize_with = "null_default")]
     pub leases: Vec<RoleLeaseView>,
@@ -1763,6 +1765,12 @@ pub struct RoleActivationDto {
     pub hard_ttl_secs: Option<u64>,
     #[serde(default)]
     pub idle_ttl_secs: Option<u64>,
+    #[serde(default)]
+    pub renew_window_secs: u64,
+    #[serde(default)]
+    pub renew_extend_secs: u64,
+    #[serde(default)]
+    pub max_renewals: u32,
 }
 
 impl RoleActivationDto {
@@ -1773,6 +1781,9 @@ impl RoleActivationDto {
             kind: RoleActivationKind::PinnedBaseline,
             hard_ttl_secs: None,
             idle_ttl_secs: None,
+            renew_window_secs: 0,
+            renew_extend_secs: 0,
+            max_renewals: 0,
         }
     }
 
@@ -1783,17 +1794,48 @@ impl RoleActivationDto {
             kind: RoleActivationKind::Elective,
             hard_ttl_secs: None,
             idle_ttl_secs: None,
+            renew_window_secs: 0,
+            renew_extend_secs: 0,
+            max_renewals: 0,
         }
     }
 
-    /// Fixed server-bounded `Timed` activation descriptor.
+    /// Fixed server-bounded non-renewable `Timed` activation descriptor.
     #[must_use]
     pub const fn timed(hard_ttl_secs: u64, idle_ttl_secs: u64) -> Self {
         Self {
             kind: RoleActivationKind::Timed,
             hard_ttl_secs: Some(hard_ttl_secs),
             idle_ttl_secs: Some(idle_ttl_secs),
+            renew_window_secs: 0,
+            renew_extend_secs: 0,
+            max_renewals: 0,
         }
+    }
+
+    /// Server-bounded renewable `Timed` activation descriptor.
+    #[must_use]
+    pub const fn timed_renewable(
+        hard_ttl_secs: u64,
+        idle_ttl_secs: u64,
+        renew_window_secs: u64,
+        renew_extend_secs: u64,
+        max_renewals: u32,
+    ) -> Self {
+        Self {
+            kind: RoleActivationKind::Timed,
+            hard_ttl_secs: Some(hard_ttl_secs),
+            idle_ttl_secs: Some(idle_ttl_secs),
+            renew_window_secs,
+            renew_extend_secs,
+            max_renewals,
+        }
+    }
+
+    /// Canonical `super-operator` activation descriptor (15m hard, 2m idle, 1x +15m last-2m renewal).
+    #[must_use]
+    pub const fn super_operator() -> Self {
+        Self::timed_renewable(900, 120, 120, 900, 1)
     }
 }
 
@@ -2659,6 +2701,18 @@ pub mod paths {
     #[must_use]
     pub fn role_disable(role_id: &str) -> String {
         format!("/api/auth/roles/{role_id}/disable")
+    }
+
+    /// `/api/auth/roles/{role_id}/renew/start`.
+    #[must_use]
+    pub fn role_renew_start(role_id: &str) -> String {
+        format!("/api/auth/roles/{role_id}/renew/start")
+    }
+
+    /// `/api/auth/roles/{role_id}/renew`.
+    #[must_use]
+    pub fn role_renew(role_id: &str) -> String {
+        format!("/api/auth/roles/{role_id}/renew")
     }
 
     /// `/api/auth/passkeys/{credential_id}`.

@@ -851,6 +851,21 @@ pub struct RoleLeaseView {
     /// Whole seconds remaining until idle timeout (`[idle_timer]`).
     #[serde(default)]
     pub idle_timer: u64,
+    /// Renewal window in seconds before hard expiry (`0` = non-renewable).
+    #[serde(default)]
+    pub renew_window_secs: u64,
+    /// Extension added upon Passkey renewal in seconds.
+    #[serde(default)]
+    pub renew_extend_secs: u64,
+    /// Maximum allowed renewals per lease (`0` = non-renewable).
+    #[serde(default)]
+    pub max_renewals: u32,
+    /// Renewals already used on this lease.
+    #[serde(default)]
+    pub renewals_used: u32,
+    /// `true` when this lease is active, inside its renewal window, and has renewals remaining.
+    #[serde(default)]
+    pub can_renew: bool,
 }
 
 impl RoleLeaseView {
@@ -862,7 +877,7 @@ impl RoleLeaseView {
         format!("{mins:02}:{rem:02}")
     }
 
-    /// Recompute `seconds_remaining` and `idle_timer` at `now_ms`, returning `true` while active.
+    /// Recompute `seconds_remaining`, `idle_timer`, and `can_renew` at `now_ms`, returning `true` while active.
     pub fn tick_at(&mut self, now_ms: u64) -> bool {
         self.seconds_remaining = self
             .hard_expires_at_ms
@@ -870,6 +885,11 @@ impl RoleLeaseView {
             .div_ceil(1_000);
         let effective_idle_ms = self.idle_expires_at_ms.min(self.hard_expires_at_ms);
         self.idle_timer = effective_idle_ms.saturating_sub(now_ms).div_ceil(1_000);
+        self.can_renew = !self.is_expired()
+            && self.max_renewals > self.renewals_used
+            && self.renew_window_secs > 0
+            && self.renew_extend_secs > 0
+            && self.seconds_remaining <= self.renew_window_secs;
         !self.is_expired()
     }
 
@@ -1098,6 +1118,11 @@ pub enum UiCommand {
     },
     /// Activate a `Timed` (or step-up `Elective`) role using a verified Passkey assertion (zero client TTL parameters).
     ElevateWithPasskey {
+        role_id: String,
+        assertion_json: String,
+    },
+    /// Extend an active renewable `Timed` role lease inside its final renewal window via fresh Passkey assertion.
+    RenewRoleWithPasskey {
         role_id: String,
         assertion_json: String,
     },

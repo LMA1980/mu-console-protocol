@@ -1,6 +1,6 @@
 # mu-console-protocol
 
-Zero-dependency (`#![no_std]` + `alloc`, `#![forbid(unsafe_code)]`) IPC view models, REST/SSE DTOs, and versioned postcard codec (`PROTOCOL_VERSION = 6`) connecting the MuConsole UI and data worker.
+Zero-dependency (`#![no_std]` + `alloc`, `#![forbid(unsafe_code)]`) IPC view models, REST/SSE DTOs, and versioned postcard codec (`PROTOCOL_VERSION = 7`) connecting the MuConsole UI and data worker.
 
 ## Architecture
 
