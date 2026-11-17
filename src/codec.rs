@@ -14,8 +14,10 @@ use serde::{de::DeserializeOwned, Serialize};
 /// 5 = Live workflow parity (QueueItemView unwrapping, per-job detail/log, ResumeJob, submodules);
 /// 6 = Html & Wireframe skins, 8 role-gated areas, DialogModel, mu-auth folios/leases,
 /// SubsystemHealthSummary, ecosystem-agnostic CdRunDto & Model-Runner DTOs;
-/// 7 = RoleLeaseView renewal metadata, AuthSessionDto::bound_role_specs, RenewRoleWithPasskey.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// 7 = RoleLeaseView renewal metadata, AuthSessionDto::bound_role_specs, RenewRoleWithPasskey;
+/// 8 = Registry canonical route slug/label, AuthSessionDto::catalog_role_specs,
+/// SessionRoleDescriptor::unassigned, SessionRolesDialogModel::error_message.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Codec failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +173,35 @@ mod tests {
                     reason_code: Some(AuthReasonCode::PasskeyEnrollmentRequired),
                 },
             )),
+            UiCommand::OpenDialog(DialogModel::SessionRoles(SessionRolesDialogModel {
+                github_login: "lma".to_string(),
+                roles: vec![
+                    SessionRoleDescriptor {
+                        role_id: "operator".to_string(),
+                        display_name: Some("Baseline Operator".to_string()),
+                        description: "Canonical baseline console access.".to_string(),
+                        activation: RoleActivationDto::pinned_baseline(),
+                        step_up: StepUpRequirement::None,
+                        active: true,
+                        lease: None,
+                        step_up_verified: false,
+                        unassigned: false,
+                    },
+                    SessionRoleDescriptor {
+                        role_id: "platform-admin".to_string(),
+                        display_name: Some("Platform Administrator".to_string()),
+                        description: "Timed Passkey role.".to_string(),
+                        activation: RoleActivationDto::timed(900, 300),
+                        step_up: StepUpRequirement::Passkey,
+                        active: false,
+                        lease: None,
+                        step_up_verified: false,
+                        unassigned: true,
+                    },
+                ],
+                lock_all_enabled: false,
+                error_message: Some("Passkey assertion cancelled".to_string()),
+            })),
             UiCommand::CloseDialog,
             UiCommand::TriggerAbRollback {
                 deployment_id: "dep-42".to_string(),

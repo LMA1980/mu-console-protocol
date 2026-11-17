@@ -202,6 +202,17 @@ fn gen_auth(r: &mut Rng) -> AuthState {
             passkey_count: 1,
             baseline_role: Some("operator".into()),
             bound_roles: alloc::vec!["operator".into(), "admin".into()],
+            catalog_role_specs: if r.coin() {
+                alloc::vec![RoleSpecDto {
+                    id: "admin".into(),
+                    display_name: Some("Platform Administrator".into()),
+                    description: "Timed Passkey role.".into(),
+                    activation: RoleActivationDto::timed(900, 300),
+                    step_up: StepUpRequirement::Passkey,
+                }]
+            } else {
+                Vec::new()
+            },
             active_roles: alloc::vec![RoleSpecDto {
                 id: "operator".into(),
                 display_name: Some("Operator".into()),
@@ -272,7 +283,7 @@ fn gen_view(r: &mut Rng) -> ViewModel {
             }],
             passkey_count: 1,
         }),
-        active_dialog: match r.below(3) {
+        active_dialog: match r.below(4) {
             0 => None,
             1 => Some(DialogModel::PasskeyEnrollmentGate(
                 PasskeyEnrollmentGateModel {
@@ -281,7 +292,23 @@ fn gen_view(r: &mut Rng) -> ViewModel {
                     reason_code: Some(AuthReasonCode::PasskeyEnrollmentRequired),
                 },
             )),
-            _ => Some(DialogModel::UserProfile(UserProfileDialogModel::default())),
+            2 => Some(DialogModel::UserProfile(UserProfileDialogModel::default())),
+            _ => Some(DialogModel::SessionRoles(SessionRolesDialogModel {
+                github_login: "u1".into(),
+                roles: alloc::vec![SessionRoleDescriptor {
+                    role_id: "admin".into(),
+                    display_name: Some("Admin".into()),
+                    description: "Timed admin role".into(),
+                    activation: RoleActivationDto::timed(900, 300),
+                    step_up: StepUpRequirement::Passkey,
+                    active: false,
+                    lease: None,
+                    step_up_verified: false,
+                    unassigned: r.coin(),
+                }],
+                lock_all_enabled: r.coin(),
+                error_message: r.coin().then(|| "Passkey assertion cancelled".into()),
+            })),
         },
         ci_jobs: Vec::new(),
         subsystem_health,
@@ -1001,8 +1028,17 @@ fn protocol_v6_routes_legacy_aliases_and_all_eight_areas() {
     assert_eq!(Area::ALL.len(), 8);
     assert_eq!(Area::Platform.slug(), "platform");
     assert_eq!(Area::AbDeploy.slug(), "ab-deploy");
+    assert_eq!(Area::Repository.slug(), "registry");
+    assert_eq!(Area::Repository.label(), "Registry");
+    assert_eq!(Area::Repository.short_label(), "REG");
     assert_eq!(Area::ModelRunner.slug(), "model-runner");
+    assert_eq!(Area::ModelRunner.label(), "Model Runner");
+    assert_eq!(Area::ModelRunner.short_label(), "MR");
+    assert_eq!(SubsystemId::Repository.as_str(), "repository");
     assert_eq!(Area::from_slug("ab"), Some(Area::AbDeploy));
+    assert_eq!(Area::from_slug("repository"), Some(Area::Repository));
+    assert_eq!(Area::from_slug("registry"), Some(Area::Repository));
+    assert_eq!(Area::from_slug("reg"), Some(Area::Repository));
     assert_eq!(Area::from_slug("mr"), Some(Area::ModelRunner));
 
     // Every Area maps bijectively to a unique SubsystemId.
@@ -1063,6 +1099,26 @@ fn protocol_v6_routes_legacy_aliases_and_all_eight_areas() {
             .expect("registry")
             .subview,
         SubView::Repository(RepositorySubView::Packages)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/repository")
+            .expect("repository")
+            .subview,
+        SubView::Repository(RepositorySubView::Packages)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/repository/canaries")
+            .expect("repository canaries")
+            .subview,
+        SubView::Repository(RepositorySubView::CanaryTaints)
+    );
+    assert_eq!(
+        Route::try_from_hash("#/reg/cas").expect("reg cas").subview,
+        SubView::Repository(RepositorySubView::CasHealth)
+    );
+    assert_eq!(
+        Route::for_subview(SubView::Repository(RepositorySubView::Packages)).to_hash(),
+        "#/registry/packages"
     );
     assert_eq!(
         Route::try_from_hash("#/observe").expect("observe").subview,
@@ -1323,4 +1379,207 @@ fn protocol_v6_mu_auth_mirrors_health_cd_mr_and_paths() {
     );
     assert_eq!(paths::AUTH_PROFILE, "/api/auth/profile");
     assert_eq!(paths::AUTH_ROLE_LOCK, "/api/auth/roles/lock");
+}
+
+#[test]
+fn registry_canonical_slug_label_and_model_runner_label() {
+    use core::str::FromStr;
+
+    assert_eq!(Area::Repository.label(), "Registry");
+    assert_eq!(Area::Repository.slug(), "registry");
+    assert_eq!(Area::Repository.short_label(), "REG");
+    assert_eq!(Area::Repository.subsystem(), SubsystemId::Repository);
+    assert_eq!(SubsystemId::Repository.as_str(), "repository");
+    assert_eq!(
+        SubsystemId::from_str("repository"),
+        Ok(SubsystemId::Repository)
+    );
+    assert_eq!(SubsystemId::from_str("reg"), Ok(SubsystemId::Repository));
+
+    assert_eq!(Area::ModelRunner.label(), "Model Runner");
+    assert_eq!(Area::ModelRunner.slug(), "model-runner");
+    assert_eq!(Area::ModelRunner.short_label(), "MR");
+    assert_eq!(Area::from_slug("model-runner"), Some(Area::ModelRunner));
+    assert_eq!(Area::from_slug("model_runner"), Some(Area::ModelRunner));
+
+    for alias in ["repository", "registry", "reg", "REGISTRY", " reg "] {
+        assert_eq!(Area::from_slug(alias), Some(Area::Repository));
+    }
+    assert_eq!(
+        Route::from_hash("#/repository").to_hash(),
+        "#/registry/packages"
+    );
+    assert_eq!(
+        Route::from_hash("#/repository/canaries?repo=LMA1980/MuRegist").to_hash(),
+        "#/registry/canaries?repo=LMA1980/MuRegist"
+    );
+
+    let area_frame = postcard::to_allocvec(&Area::Repository).expect("serialize area");
+    let decoded_area: Area = postcard::from_bytes(&area_frame).expect("decode area");
+    assert_eq!(decoded_area, Area::Repository);
+}
+
+#[test]
+fn session_role_descriptors_catalog_dormant_badges_and_dialog_feedback() {
+    use crate::dto::AuthSessionDto;
+
+    let op_spec = RoleSpecDto {
+        id: "operator".into(),
+        display_name: Some("Baseline Operator".into()),
+        description: "Baseline read access".into(),
+        activation: RoleActivationDto::pinned_baseline(),
+        step_up: StepUpRequirement::None,
+    };
+    let ci_spec = RoleSpecDto {
+        id: "ci-operator".into(),
+        display_name: Some("CI Operator".into()),
+        description: "Elective CI queue controls".into(),
+        activation: RoleActivationDto::elective(),
+        step_up: StepUpRequirement::None,
+    };
+    let plat_spec = RoleSpecDto {
+        id: "platform-admin".into(),
+        display_name: Some("Platform Administrator".into()),
+        description: "Timed Passkey platform administration".into(),
+        activation: RoleActivationDto::timed(900, 300),
+        step_up: StepUpRequirement::Passkey,
+    };
+    let super_spec = RoleSpecDto {
+        id: "super-operator".into(),
+        display_name: Some("Super Operator".into()),
+        description: "All-access Passkey role".into(),
+        activation: RoleActivationDto::super_operator(),
+        step_up: StepUpRequirement::Passkey,
+    };
+
+    let session = AuthSessionDto {
+        authenticated: true,
+        github_login: Some("LMA1980".into()),
+        invite_bound: true,
+        passkey_count: 1,
+        baseline_role: Some("operator".into()),
+        bound_roles: alloc::vec![
+            "operator".into(),
+            "ci-operator".into(),
+            "super-operator".into(),
+        ],
+        bound_role_specs: alloc::vec![op_spec.clone(), ci_spec.clone(), super_spec.clone()],
+        catalog_role_specs: alloc::vec![
+            op_spec.clone(),
+            ci_spec.clone(),
+            plat_spec.clone(),
+            super_spec.clone(),
+        ],
+        active_roles: alloc::vec![op_spec.clone()],
+        ..AuthSessionDto::default()
+    };
+
+    let mut auth = AuthState::from_session(&session);
+    assert_eq!(auth.catalog_role_specs.len(), 4);
+
+    let descriptors = auth.session_role_descriptors();
+    assert_eq!(descriptors.len(), 4);
+    assert_eq!(descriptors[0].role_id, "operator");
+    assert!(descriptors[0].active);
+    assert!(!descriptors[0].unassigned);
+    assert_eq!(descriptors[1].role_id, "ci-operator");
+    assert!(!descriptors[1].active);
+    assert!(!descriptors[1].unassigned);
+    assert_eq!(descriptors[2].role_id, "super-operator");
+    assert!(!descriptors[2].active);
+    assert!(!descriptors[2].unassigned);
+    assert_eq!(descriptors[3].role_id, "platform-admin");
+    assert!(!descriptors[3].active);
+    assert!(descriptors[3].unassigned);
+    assert!(!descriptors[3].step_up_verified);
+    assert!(descriptors[3].lease.is_none());
+
+    let dormant = auth.dormant_role_badges();
+    assert_eq!(dormant.len(), 2);
+    assert_eq!(dormant[0].role_id, "ci-operator");
+    assert_eq!(dormant[0].effective_label(), "CI Operator");
+    assert!(dormant[0].lease.is_none());
+    assert_eq!(dormant[1].role_id, "super-operator");
+    assert_eq!(dormant[1].effective_label(), "Super Operator");
+    assert!(dormant[1].lease.is_none());
+
+    // Activating super-operator moves it out of dormant_role_badges and marks step_up_verified.
+    let super_lease = RoleLeaseView {
+        role_id: "super-operator".into(),
+        display_name: Some("Super Operator".into()),
+        seconds_remaining: 840,
+        idle_timer: 120,
+        hard_ttl_secs: 900,
+        idle_ttl_secs: 120,
+        ..RoleLeaseView::default()
+    };
+    auth.active_roles.push(RoleBadgeView {
+        role_id: "super-operator".into(),
+        display_name: Some("Super Operator".into()),
+        activation: RoleActivationDto::super_operator(),
+        lease: Some(super_lease.clone()),
+    });
+    auth.leases.push(super_lease);
+
+    let active_descriptors = auth.session_role_descriptors();
+    let super_desc = active_descriptors
+        .iter()
+        .find(|d| d.role_id == "super-operator")
+        .expect("super-operator descriptor");
+    assert!(super_desc.active);
+    assert!(super_desc.step_up_verified);
+    assert!(!super_desc.unassigned);
+
+    let remaining_dormant = auth.dormant_role_badges();
+    assert_eq!(remaining_dormant.len(), 1);
+    assert_eq!(remaining_dormant[0].role_id, "ci-operator");
+
+    // Fallback when bound_role_specs is omitted pulls metadata from catalog_role_specs.
+    let legacy_auth = AuthState::from_session(&AuthSessionDto {
+        authenticated: true,
+        github_login: Some("LMA1980".into()),
+        invite_bound: true,
+        passkey_count: 1,
+        baseline_role: Some("operator".into()),
+        bound_roles: alloc::vec!["operator".into(), "ci-operator".into()],
+        catalog_role_specs: alloc::vec![op_spec, ci_spec, plat_spec],
+        active_roles: Vec::new(),
+        ..AuthSessionDto::default()
+    });
+    let legacy_descs = legacy_auth.session_role_descriptors();
+    assert_eq!(legacy_descs.len(), 3);
+    assert!(!legacy_descs[1].unassigned);
+    assert_eq!(legacy_descs[1].display_name.as_deref(), Some("CI Operator"));
+    assert!(legacy_descs[2].unassigned);
+    assert_eq!(legacy_descs[2].role_id, "platform-admin");
+    assert_eq!(legacy_auth.dormant_role_badges().len(), 1);
+
+    // Unauthenticated sessions do not leak catalog roles.
+    let anon = AuthState::from_session(&AuthSessionDto {
+        catalog_role_specs: alloc::vec![super_spec],
+        ..AuthSessionDto::default()
+    });
+    assert!(anon.catalog_role_specs.is_empty());
+    assert!(anon.session_role_descriptors().is_empty());
+    assert!(anon.dormant_role_badges().is_empty());
+
+    // Round-trip SessionRolesDialogModel with error_message and AuthState via postcard + Delta.
+    let dlg_cmd = UiCommand::OpenDialog(DialogModel::SessionRoles(SessionRolesDialogModel {
+        github_login: "LMA1980".into(),
+        roles: active_descriptors,
+        lock_all_enabled: true,
+        error_message: Some("Passkey assertion cancelled".into()),
+    }));
+    let encoded_cmd = encode(&dlg_cmd).expect("encode dialog");
+    assert_eq!(decode::<UiCommand>(&encoded_cmd), Ok(dlg_cmd));
+
+    let old_vm = ViewModel::default();
+    let new_vm = ViewModel {
+        auth: auth.clone(),
+        ..ViewModel::default()
+    };
+    let delta = diff(&old_vm, &new_vm);
+    let mut patched = old_vm;
+    apply_all(&mut patched, &delta);
+    assert_eq!(patched.auth, auth);
 }
