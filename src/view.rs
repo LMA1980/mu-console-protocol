@@ -1103,6 +1103,8 @@ pub struct AuthState {
     #[serde(default)]
     pub bound_role_specs: Vec<RoleSpecDto>,
     #[serde(default)]
+    pub catalog_role_specs: Vec<RoleSpecDto>,
+    #[serde(default)]
     pub active_roles: Vec<RoleBadgeView>,
     #[serde(default)]
     pub leases: Vec<RoleLeaseView>,
@@ -1195,6 +1197,7 @@ impl AuthState {
                 baseline_role: dto.baseline_role.clone(),
                 bound_roles: dto.bound_roles.clone(),
                 bound_role_specs: dto.bound_role_specs.clone(),
+                catalog_role_specs: dto.catalog_role_specs.clone(),
                 active_roles: Vec::new(),
                 leases: Vec::new(),
                 active_folios,
@@ -1237,6 +1240,7 @@ impl AuthState {
             baseline_role: dto.baseline_role.clone().or_else(|| dto.role.clone()),
             bound_roles: dto.bound_roles.clone(),
             bound_role_specs: dto.bound_role_specs.clone(),
+            catalog_role_specs: dto.catalog_role_specs.clone(),
             active_roles,
             leases: dto.leases.clone(),
             active_folios: dto.active_folios.clone(),
@@ -1268,7 +1272,8 @@ impl AuthState {
     }
 
     /// Derive complete `SessionRoleDescriptor` rows for `+role` by combining server-provided
-    /// `bound_role_specs`, `bound_roles`, `active_roles`, and `leases`.
+    /// `bound_role_specs`, `bound_roles`, `active_roles`, `leases`, and remaining unassigned roles
+    /// from `catalog_role_specs`.
     #[must_use]
     pub fn session_role_descriptors(&self) -> Vec<crate::model::SessionRoleDescriptor> {
         let mut ids: Vec<String> = Vec::new();
@@ -1288,7 +1293,7 @@ impl AuthState {
             }
         }
 
-        let mut descriptors = Vec::with_capacity(ids.len());
+        let mut descriptors = Vec::with_capacity(ids.len() + self.catalog_role_specs.len());
         for role_id in ids {
             let active_badge = self.active_roles.iter().find(|b| b.role_id == role_id);
             let active_lease = self
@@ -1297,7 +1302,11 @@ impl AuthState {
                 .find(|l| l.role_id == role_id)
                 .cloned()
                 .or_else(|| active_badge.and_then(|b| b.lease.clone()));
-            let spec = self.bound_role_specs.iter().find(|s| s.id == role_id);
+            let spec = self
+                .bound_role_specs
+                .iter()
+                .find(|s| s.id == role_id)
+                .or_else(|| self.catalog_role_specs.iter().find(|s| s.id == role_id));
 
             let (display_name, description, activation, step_up) = if let Some(spec) = spec {
                 (
@@ -1325,9 +1334,41 @@ impl AuthState {
                 active,
                 lease: active_lease,
                 step_up_verified: active && requires_step_up,
+                unassigned: false,
             });
         }
+
+        for spec in &self.catalog_role_specs {
+            if !descriptors.iter().any(|d| d.role_id == spec.id) {
+                descriptors.push(crate::model::SessionRoleDescriptor {
+                    role_id: spec.id.clone(),
+                    display_name: spec.display_name.clone(),
+                    description: spec.description.clone(),
+                    activation: spec.activation,
+                    step_up: spec.step_up,
+                    active: false,
+                    lease: None,
+                    step_up_verified: false,
+                    unassigned: true,
+                });
+            }
+        }
         descriptors
+    }
+
+    /// Return [`RoleBadgeView`] entries for caller-bound roles that are not currently active.
+    #[must_use]
+    pub fn dormant_role_badges(&self) -> Vec<RoleBadgeView> {
+        self.session_role_descriptors()
+            .into_iter()
+            .filter(|d| !d.unassigned && !d.active)
+            .map(|d| RoleBadgeView {
+                role_id: d.role_id,
+                display_name: d.display_name,
+                activation: d.activation,
+                lease: None,
+            })
+            .collect()
     }
 
     /// Return `true` if `policy` is granted in the active effective policy set.

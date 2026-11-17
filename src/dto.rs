@@ -1483,6 +1483,8 @@ pub struct AuthSessionDto {
     #[serde(default, deserialize_with = "null_default")]
     pub bound_role_specs: Vec<RoleSpecDto>,
     #[serde(default, deserialize_with = "null_default")]
+    pub catalog_role_specs: Vec<RoleSpecDto>,
+    #[serde(default, deserialize_with = "null_default")]
     pub active_roles: Vec<RoleSpecDto>,
     #[serde(default, deserialize_with = "null_default")]
     pub leases: Vec<RoleLeaseView>,

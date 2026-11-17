@@ -1,11 +1,11 @@
 # mu-console-protocol
 
-Zero-dependency (`#![no_std]` + `alloc`, `#![forbid(unsafe_code)]`) IPC view models, REST/SSE DTOs, and versioned postcard codec (`PROTOCOL_VERSION = 7`) connecting the MuConsole UI and data worker.
+Zero-dependency (`#![no_std]` + `alloc`, `#![forbid(unsafe_code)]`) IPC view models, REST/SSE DTOs, and versioned postcard codec (`PROTOCOL_VERSION = 8`) connecting the MuConsole UI and data worker.
 
 ## Architecture
 
 - **Areas, Skins & Dialogs (`model`)**:
-  - 8 canonical role-gated `Area` variants (`Dashboard`, `Ci`, `Cd`, `AbDeploy`, `Repository`, `Observability`, `ModelRunner`, `Platform`) spanning 27 `SubView` routes, with legacy hash alias resolution (`#/iam` -> `Platform`, `#/fleet` -> `Ci`, `#/cd/gate` -> `AbDeploy`, `#/registry` -> `Repository`, `#/observe` -> `Observability`).
+  - 8 canonical role-gated `Area` variants (`Dashboard`, `Ci`, `Cd`, `AbDeploy`, `Repository`, `Observability`, `ModelRunner`, `Platform`) spanning 27 `SubView` routes, with legacy hash alias resolution (`#/iam` -> `Platform`, `#/fleet` -> `Ci`, `#/cd/gate` -> `AbDeploy`, `#/repository` -> `Repository`, `#/observe` -> `Observability`).
   - Dual skin model (`ConsoleSkin::{Html, Wireframe}`, default `Html`) paired with skin-agnostic `DialogModel` (`PasskeyEnrollmentGate`, `UserProfile`, `SessionRoles`, `RiskConfirm`, `InviteCreatedOnce`).
   - Server-authoritative RBAC lease views (`RoleLeaseView`), structured `SkipReason` / `AuthReasonCode` tokens, `UiCommand` actions (without client-supplied TTL overrides or manual A|B promotion).
 - **View Models & Incremental Diffs (`view`)**:

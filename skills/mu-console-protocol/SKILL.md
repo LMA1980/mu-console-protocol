@@ -17,8 +17,8 @@ Use these guidelines when modifying or consuming `mu-console-protocol` for IPC c
 ## 2. Protocol Components
 
 - **Commands, Areas, Skins & Dialogs (`model`)**:
-  - `PROTOCOL_VERSION = 7`; `ConsoleSkin::{Html, Wireframe}` (`Html` default).
-  - 8 role-gated `Area` variants (`Dashboard`, `Ci`, `Cd`, `AbDeploy`, `Repository`, `Observability`, `ModelRunner`, `Platform`) across 27 `SubView` variants, mapping legacy `#/iam`, `#/fleet`, `#/cd/gate`, `#/registry`, and `#/observe` routes cleanly.
+  - `PROTOCOL_VERSION = 8`; `ConsoleSkin::{Html, Wireframe}` (`Html` default).
+  - 8 role-gated `Area` variants (`Dashboard`, `Ci`, `Cd`, `AbDeploy`, `Repository`, `Observability`, `ModelRunner`, `Platform`) across 27 `SubView` variants, mapping legacy `#/iam`, `#/fleet`, `#/cd/gate`, `#/repository`, and `#/observe` routes cleanly.
   - Skin-agnostic `DialogModel` (`PasskeyEnrollmentGate`, `UserProfile`, `SessionRoles`, `RiskConfirm`, `InviteCreatedOnce`), `RoleLeaseView`, `SkipReason`, `AuthReasonCode`, and `UiCommand` variants (never expose client-supplied role TTL overrides or manual A|B promotion).
 - **View Models & Diffs (`view`)**:
   - Skin-agnostic `ViewModel` (`Clone + PartialEq + Eq`) with fail-closed `AuthState` (`Unresolved` before session resolution, zero invite disclosure on `AuthorizationDenied`, mandatory `0`-Passkey gating).

@@ -61,7 +61,7 @@ impl Area {
             Self::Ci => "ci",
             Self::Cd => "cd",
             Self::AbDeploy => "ab-deploy",
-            Self::Repository => "repository",
+            Self::Repository => "registry",
             Self::Observability => "observability",
             Self::ModelRunner => "model-runner",
             Self::Platform => "platform",
@@ -76,9 +76,9 @@ impl Area {
             Self::Ci => "CI",
             Self::Cd => "CD",
             Self::AbDeploy => "A|B Deploy",
-            Self::Repository => "Repository",
+            Self::Repository => "Registry",
             Self::Observability => "Observability",
-            Self::ModelRunner => "Model-Runner",
+            Self::ModelRunner => "Model Runner",
             Self::Platform => "Platform",
         }
     }
@@ -113,7 +113,7 @@ impl Area {
         }
     }
 
-    /// Parse a canonical slug or legacy route alias (`#/iam`, `#/registry`, `#/observe`, `#/fleet`).
+    /// Parse a canonical slug or legacy route alias (`#/iam`, `#/repository`, `#/observe`, `#/fleet`).
     #[must_use]
     pub fn from_slug(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -656,7 +656,7 @@ impl Route {
     }
 
     /// Parse a browser hash fragment (`#/{area}/{subview}?...`), mapping legacy aliases (`#/iam`,
-    /// `#/fleet`, `#/registry`, `#/observe`, `#/cd/gate`) to canonical v6 routes.
+    /// `#/fleet`, `#/repository`, `#/observe`, `#/cd/gate`) to canonical routes.
     #[must_use]
     pub fn try_from_hash(raw: &str) -> Option<Self> {
         let trimmed = raw.trim();
@@ -910,10 +910,10 @@ pub enum UserProfileTab {
     Passkeys,
 }
 
-/// One dormant or active role option rendered inside [`DialogModel::SessionRoles`].
+/// One dormant, active, or unassigned catalog role option rendered inside [`DialogModel::SessionRoles`].
 ///
 /// Intentionally carries zero user-editable TTL fields; `Timed` TTL bounds are server-fixed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SessionRoleDescriptor {
     pub role_id: String,
     #[serde(default)]
@@ -928,6 +928,8 @@ pub struct SessionRoleDescriptor {
     pub lease: Option<RoleLeaseView>,
     #[serde(default)]
     pub step_up_verified: bool,
+    #[serde(default)]
+    pub unassigned: bool,
 }
 
 /// Target action guarded by [`DialogModel::RiskConfirm`].
@@ -1008,6 +1010,8 @@ pub struct SessionRolesDialogModel {
     pub roles: Vec<SessionRoleDescriptor>,
     #[serde(default)]
     pub lock_all_enabled: bool,
+    #[serde(default)]
+    pub error_message: Option<String>,
 }
 
 /// Explicit risk-confirmation modal payload replacing hold-to-arm switches.
