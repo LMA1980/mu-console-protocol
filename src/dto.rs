@@ -2612,10 +2612,21 @@ pub mod paths {
     /// Observe ingress upstreams health (`MuObserve`).
     pub const OBS_INGRESS_UPSTREAMS: &str = "/api/obs/v1/ingress/upstreams";
 
-    fn percent_encode_query(input: &str) -> String {
+    pub(crate) fn percent_encode_query(input: &str) -> String {
+        percent_encode_with_slash(input, false)
+    }
+
+    pub(crate) fn percent_encode_hash_query_value(input: &str) -> String {
+        percent_encode_with_slash(input, true)
+    }
+
+    fn percent_encode_with_slash(input: &str, keep_slash: bool) -> String {
         let mut out = String::with_capacity(input.len());
         for b in input.bytes() {
-            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            if b.is_ascii_alphanumeric()
+                || matches!(b, b'-' | b'_' | b'.' | b'~')
+                || (keep_slash && b == b'/')
+            {
                 out.push(b as char);
             } else {
                 use core::fmt::Write;
@@ -2623,6 +2634,18 @@ pub mod paths {
             }
         }
         out
+    }
+
+    /// `/api/obs/v1/logs?limit={limit}[&before={before}]` with RFC 3986 percent-encoding.
+    #[must_use]
+    pub fn obs_logs_page(before: Option<&str>, limit: usize) -> String {
+        match before.map(str::trim).filter(|c| !c.is_empty()) {
+            Some(cursor) => format!(
+                "/api/obs/v1/logs?limit={limit}&before={}",
+                percent_encode_query(cursor)
+            ),
+            None => format!("/api/obs/v1/logs?limit={limit}"),
+        }
     }
 
     /// `/api/obs/v1/logs?q={q}&limit={limit}` with RFC 3986 percent-encoding.
@@ -2633,6 +2656,19 @@ pub mod paths {
             percent_encode_query(q),
             limit
         )
+    }
+
+    /// `/api/obs/v1/logs?q={q}&limit={limit}[&before={before}]` with RFC 3986 percent-encoding.
+    #[must_use]
+    pub fn obs_logs_query_page(q: &str, before: Option<&str>, limit: usize) -> String {
+        match before.map(str::trim).filter(|c| !c.is_empty()) {
+            Some(cursor) => format!(
+                "/api/obs/v1/logs?q={}&limit={limit}&before={}",
+                percent_encode_query(q),
+                percent_encode_query(cursor)
+            ),
+            None => obs_logs_query(q, limit),
+        }
     }
 
     /// `/api/repos/{owner}/{repo}/summary`.

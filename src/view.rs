@@ -985,6 +985,20 @@ pub struct DataStoreHealth {
     pub oldest_watermark_iso: String,
 }
 
+/// Sliding-window archive and pagination metadata for `OBS > Logs`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ObsLogWindowMeta {
+    pub window_start_index: u32,
+    pub cached_total: u32,
+    pub total_matched: Option<u64>,
+    pub has_older: bool,
+    pub has_newer: bool,
+    pub loading_older: bool,
+    pub loading_newer: bool,
+    pub search_active: bool,
+    pub pending_live_count: u32,
+}
+
 /// Aggregate state for `Area::Observe` (`OBS`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ObserveView {
@@ -993,6 +1007,8 @@ pub struct ObserveView {
     pub traces: Vec<PurePathTrace>,
     pub problems: Vec<SloProblem>,
     pub logs: Vec<OtelLogEntry>,
+    #[serde(default)]
+    pub log_window: ObsLogWindowMeta,
     pub metrics: Vec<HardwareMetricSeries>,
     pub store: DataStoreHealth,
     #[serde(default)]

@@ -621,21 +621,32 @@ impl Route {
     /// Format this route as a URL fragment (`#/{area}/{subview}[?...]`).
     #[must_use]
     pub fn to_hash(&self) -> String {
+        use crate::dto::paths::percent_encode_hash_query_value;
         let mut out = format!("#/{}/{}", self.area.slug(), self.subview.slug());
         let mut sep = '?';
         if let Some(repo) = &self.repo {
             out.push(sep);
-            out.push_str(&format!("repo={}/{}", repo.owner, repo.repo));
+            out.push_str(&format!(
+                "repo={}/{}",
+                percent_encode_hash_query_value(&repo.owner),
+                percent_encode_hash_query_value(&repo.repo)
+            ));
             sep = '&';
         }
         if let Some(sub) = &self.submodule {
             out.push(sep);
-            out.push_str(&format!("submodule={}", sub.path));
+            out.push_str(&format!(
+                "submodule={}",
+                percent_encode_hash_query_value(&sub.path)
+            ));
             sep = '&';
         }
         if let Some(branch) = &self.branch {
             out.push(sep);
-            out.push_str(&format!("branch={branch}"));
+            out.push_str(&format!(
+                "branch={}",
+                percent_encode_hash_query_value(branch)
+            ));
             sep = '&';
         }
         if let Some(job) = self.job {
@@ -645,12 +656,15 @@ impl Route {
         }
         if let Some(trace) = &self.trace_id {
             out.push(sep);
-            out.push_str(&format!("trace={trace}"));
+            out.push_str(&format!("trace={}", percent_encode_hash_query_value(trace)));
             sep = '&';
         }
         if let Some(filter) = &self.filter {
             out.push(sep);
-            out.push_str(&format!("filter={filter}"));
+            out.push_str(&format!(
+                "filter={}",
+                percent_encode_hash_query_value(filter)
+            ));
         }
         out
     }
@@ -684,7 +698,8 @@ impl Route {
         let mut route = Self::for_subview(subview);
         if let Some(q) = query_part {
             for pair in q.split('&').filter(|p| !p.is_empty()) {
-                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+                let (k, raw_v) = pair.split_once('=').unwrap_or((pair, ""));
+                let v = percent_decode_lossy(raw_v);
                 match k {
                     "repo" => {
                         if let Some((owner, repo)) = v.split_once('/') {
@@ -694,12 +709,12 @@ impl Route {
                         }
                     }
                     "submodule" if !v.is_empty() => {
-                        route.submodule = Some(SubmoduleId { path: v.into() });
+                        route.submodule = Some(SubmoduleId { path: v });
                     }
-                    "branch" if !v.is_empty() => route.branch = Some(v.into()),
+                    "branch" if !v.is_empty() => route.branch = Some(v),
                     "job" => route.job = v.parse::<u64>().ok(),
-                    "trace" if !v.is_empty() => route.trace_id = Some(v.into()),
-                    "filter" if !v.is_empty() => route.filter = Some(v.into()),
+                    "trace" if !v.is_empty() => route.trace_id = Some(v),
+                    "filter" if !v.is_empty() => route.filter = Some(v),
                     _ => {}
                 }
             }
@@ -711,6 +726,33 @@ impl Route {
     #[must_use]
     pub fn from_hash(raw: &str) -> Self {
         Self::try_from_hash(raw).unwrap_or_default()
+    }
+}
+
+fn percent_decode_lossy(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+const fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -1225,6 +1267,12 @@ pub enum UiCommand {
     Navigate {
         href: String,
     },
+    /// Load an older page of `OBS > Logs` from local cache or backend cursor.
+    LoadOlderObsLogs,
+    /// Load a newer page of `OBS > Logs` back toward the live head.
+    LoadNewerObsLogs,
+    /// Jump `OBS > Logs` immediately back to the live head window (`[0..500]`).
+    JumpToLatestObsLogs,
 }
 
 /// Connection state of the worker's upstream streams.
