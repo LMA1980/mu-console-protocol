@@ -16,8 +16,10 @@ use serde::{de::DeserializeOwned, Serialize};
 /// SubsystemHealthSummary, ecosystem-agnostic CdRunDto & Model-Runner DTOs;
 /// 7 = RoleLeaseView renewal metadata, AuthSessionDto::bound_role_specs, RenewRoleWithPasskey;
 /// 8 = Registry canonical route slug/label, AuthSessionDto::catalog_role_specs,
-/// SessionRoleDescriptor::unassigned, SessionRolesDialogModel::error_message.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// SessionRoleDescriptor::unassigned, SessionRolesDialogModel::error_message;
+/// 9 = ObsLogWindowMeta on ObserveView, log pagination UiCommands/paths, and
+/// RFC 3986 query percent-encoding in Route::to_hash/try_from_hash.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Codec failure.
 #[derive(Debug, Clone, PartialEq, Eq)]

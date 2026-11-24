@@ -1583,3 +1583,70 @@ fn session_role_descriptors_catalog_dormant_badges_and_dialog_feedback() {
     apply_all(&mut patched, &delta);
     assert_eq!(patched.auth, auth);
 }
+
+#[test]
+fn protocol_v9_obs_log_window_pagination_and_route_hash_encoding() {
+    use crate::dto::paths;
+    assert_eq!(PROTOCOL_VERSION, 9);
+
+    // Percent-encoding round-trip for filter, branch, submodule, trace_id
+    let mut route = Route::for_subview(SubView::Observability(ObservabilitySubView::Logs));
+    route.filter = Some("muregist error & rate>10 #1?a=b".into());
+    route.branch = Some("feat/obs logs".into());
+    route.submodule = Some(SubmoduleId {
+        path: "code/data".into(),
+    });
+    route.trace_id = Some("tr:99".into());
+    let encoded_hash = route.to_hash();
+    assert_eq!(
+        encoded_hash,
+        "#/observability/logs?submodule=code/data&branch=feat/obs%20logs&trace=tr%3A99&filter=muregist%20error%20%26%20rate%3E10%20%231%3Fa%3Db"
+    );
+    assert_eq!(Route::try_from_hash(&encoded_hash), Some(route));
+
+    // Paginated log endpoint builders
+    assert_eq!(
+        paths::obs_logs_page(None, 200),
+        "/api/obs/v1/logs?limit=200"
+    );
+    assert_eq!(
+        paths::obs_logs_page(Some("1700000000000:4:99"), 200),
+        "/api/obs/v1/logs?limit=200&before=1700000000000%3A4%3A99"
+    );
+    assert_eq!(
+        paths::obs_logs_query_page("muregist err", Some("1700:1:2"), 200),
+        "/api/obs/v1/logs?q=muregist%20err&limit=200&before=1700%3A1%3A2"
+    );
+    assert_eq!(
+        paths::obs_logs_query_page("muregist", None, 200),
+        "/api/obs/v1/logs?q=muregist&limit=200"
+    );
+
+    // ObsLogWindowMeta + new UiCommands postcard round-trip + Delta::Observe
+    for cmd in [
+        UiCommand::LoadOlderObsLogs,
+        UiCommand::LoadNewerObsLogs,
+        UiCommand::JumpToLatestObsLogs,
+    ] {
+        let bytes = encode(&cmd).expect("encode log cmd");
+        assert_eq!(decode::<UiCommand>(&bytes), Ok(cmd));
+    }
+
+    let old_vm = ViewModel::default();
+    let mut new_vm = ViewModel::default();
+    new_vm.observe.log_window = ObsLogWindowMeta {
+        window_start_index: 200,
+        cached_total: 1_200,
+        total_matched: Some(18_420),
+        has_older: true,
+        has_newer: true,
+        loading_older: false,
+        loading_newer: false,
+        search_active: false,
+        pending_live_count: 3,
+    };
+    let deltas = diff(&old_vm, &new_vm);
+    let mut patched = old_vm;
+    apply_all(&mut patched, &deltas);
+    assert_eq!(patched.observe.log_window, new_vm.observe.log_window);
+}
