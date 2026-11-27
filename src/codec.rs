@@ -18,8 +18,9 @@ use serde::{de::DeserializeOwned, Serialize};
 /// 8 = Registry canonical route slug/label, AuthSessionDto::catalog_role_specs,
 /// SessionRoleDescriptor::unassigned, SessionRolesDialogModel::error_message;
 /// 9 = ObsLogWindowMeta on ObserveView, log pagination UiCommands/paths, and
-/// RFC 3986 query percent-encoding in Route::to_hash/try_from_hash.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// RFC 3986 query percent-encoding in Route::to_hash/try_from_hash;
+/// 10 = WorkerConfig::preferred_repo non-URL selection hint.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Codec failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +112,12 @@ mod tests {
             UiCommand::Configure(crate::WorkerConfig {
                 api_base: "/edge".to_string(),
                 scenario: Some("tainted".to_string()),
+                preferred_repo: None,
             }),
+            UiCommand::Configure(
+                crate::WorkerConfig::from_query("?api=/edge", "https://console.example.org")
+                    .with_preferred_repo(Some("LMA1980/mu-console@code/ui")),
+            ),
             UiCommand::Subscribe(Route {
                 area: Area::Ci,
                 subview: SubView::Ci(CiSubView::Trainway),

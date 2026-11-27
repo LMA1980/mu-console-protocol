@@ -1587,7 +1587,7 @@ fn session_role_descriptors_catalog_dormant_badges_and_dialog_feedback() {
 #[test]
 fn protocol_v9_obs_log_window_pagination_and_route_hash_encoding() {
     use crate::dto::paths;
-    assert_eq!(PROTOCOL_VERSION, 9);
+    const { assert!(PROTOCOL_VERSION >= 9) };
 
     // Percent-encoding round-trip for filter, branch, submodule, trace_id
     let mut route = Route::for_subview(SubView::Observability(ObservabilitySubView::Logs));
@@ -1649,4 +1649,35 @@ fn protocol_v9_obs_log_window_pagination_and_route_hash_encoding() {
     let mut patched = old_vm;
     apply_all(&mut patched, &deltas);
     assert_eq!(patched.observe.log_window, new_vm.observe.log_window);
+}
+
+#[test]
+fn protocol_v10_worker_config_preferred_repo_round_trip() {
+    assert_eq!(PROTOCOL_VERSION, 10);
+
+    let cfg = WorkerConfig::from_query("?api=/edge", "https://console.example.org")
+        .with_preferred_repo(Some("LMA1980/mu-console@code/data"));
+    let cmd = UiCommand::Configure(cfg.clone());
+    let frame = encode(&cmd).expect("encode configure with preferred_repo");
+    assert_eq!(peek_version(&frame), Ok(10));
+    assert_eq!(decode::<UiCommand>(&frame), Ok(cmd));
+    assert_eq!(
+        cfg.preferred_repo,
+        Some(Selection {
+            repo: RepoId::new("LMA1980", "mu-console"),
+            submodule: Some(SubmoduleId {
+                path: "code/data".into(),
+            }),
+        })
+    );
+
+    let without_pref =
+        WorkerConfig::from_query("?scenario=node-lost", "https://console.example.org")
+            .with_preferred_repo(Some("malformed"));
+    assert_eq!(without_pref.preferred_repo, None);
+    let frame_none = encode(&UiCommand::Configure(without_pref.clone())).expect("encode");
+    assert_eq!(
+        decode::<UiCommand>(&frame_none),
+        Ok(UiCommand::Configure(without_pref))
+    );
 }

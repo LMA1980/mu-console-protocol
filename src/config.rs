@@ -12,6 +12,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
+use crate::model::{RepoId, SubmoduleId};
+use crate::view::Selection;
+
 /// Name of the default (non-fixture) scenario.
 pub const LIVE_SCENARIO: &str = "live";
 
@@ -22,6 +25,10 @@ pub struct WorkerConfig {
     pub api_base: String,
     /// Fixture scenario name; `None` means live data.
     pub scenario: Option<String>,
+    /// Optional non-URL repository preference hint (`localStorage`), validated
+    /// against live `/api/repos` before activating [`crate::ViewModel::selection`].
+    #[serde(default)]
+    pub preferred_repo: Option<Selection>,
 }
 
 impl WorkerConfig {
@@ -58,6 +65,14 @@ impl WorkerConfig {
         cfg
     }
 
+    /// Parse an optional `"owner/repo"` or `"owner/repo@submodule"` preference hint,
+    /// ignoring empty or malformed strings.
+    #[must_use]
+    pub fn with_preferred_repo(mut self, raw: Option<&str>) -> Self {
+        self.preferred_repo = raw.and_then(parse_preferred_repo);
+        self
+    }
+
     /// Join the API base and an absolute path (`/api/repos`).
     #[must_use]
     pub fn url(&self, path: &str) -> String {
@@ -66,6 +81,38 @@ impl WorkerConfig {
         s.push_str(path);
         s
     }
+}
+
+fn parse_preferred_repo(raw: &str) -> Option<Selection> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (repo_part, submodule) = match trimmed.split_once('@') {
+        Some((r, s)) => {
+            let sub = s.trim();
+            if sub.is_empty() {
+                return None;
+            }
+            (r.trim(), Some(SubmoduleId { path: sub.into() }))
+        }
+        None => (trimmed, None),
+    };
+    let (owner, repo) = repo_part.split_once('/')?;
+    let owner = owner.trim();
+    let repo = repo.trim();
+    if owner.is_empty()
+        || repo.is_empty()
+        || repo.contains('/')
+        || owner.chars().any(char::is_whitespace)
+        || repo.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(Selection {
+        repo: RepoId::new(owner, repo),
+        submodule,
+    })
 }
 
 fn is_safe_api_base(base: &str, origin: &str) -> bool {
@@ -181,5 +228,46 @@ mod tests {
         assert_eq!(percent_decode("a%2Fb+c"), "a/b c");
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%zz%4"), "%zz%4");
+    }
+
+    #[test]
+    fn parses_preferred_repo_and_ignores_malformed_values() {
+        let plain =
+            WorkerConfig::from_query("", ORIGIN).with_preferred_repo(Some("LMA1980/mu-console"));
+        assert_eq!(
+            plain.preferred_repo,
+            Some(Selection {
+                repo: RepoId::new("LMA1980", "mu-console"),
+                submodule: None,
+            })
+        );
+
+        let with_sub = WorkerConfig::from_query("", ORIGIN)
+            .with_preferred_repo(Some(" LMA1980/mu-console@code/ui "));
+        assert_eq!(
+            with_sub.preferred_repo,
+            Some(Selection {
+                repo: RepoId::new("LMA1980", "mu-console"),
+                submodule: Some(SubmoduleId {
+                    path: "code/ui".into(),
+                }),
+            })
+        );
+
+        for invalid in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("mu-console"),
+            Some("/mu-console"),
+            Some("LMA1980/"),
+            Some("LMA1980/mu-console/extra"),
+            Some("LMA1980/mu-console@"),
+            Some("LMA1980/mu-console@   "),
+            Some("bad owner/repo"),
+        ] {
+            let cfg = WorkerConfig::from_query("", ORIGIN).with_preferred_repo(invalid);
+            assert_eq!(cfg.preferred_repo, None, "{invalid:?} unexpectedly parsed");
+        }
     }
 }
