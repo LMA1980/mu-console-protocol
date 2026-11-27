@@ -17,7 +17,7 @@ Use these guidelines when modifying or consuming `mu-console-protocol` for IPC c
 ## 2. Protocol Components
 
 - **Commands, Areas, Skins & Dialogs (`model`)**:
-  - `PROTOCOL_VERSION = 9`; `ConsoleSkin::{Html, Wireframe}` (`Html` default).
+  - `PROTOCOL_VERSION = 10`; `ConsoleSkin::{Html, Wireframe}` (`Html` default).
   - 8 role-gated `Area` variants (`Dashboard`, `Ci`, `Cd`, `AbDeploy`, `Repository`, `Observability`, `ModelRunner`, `Platform`) across 27 `SubView` variants, mapping legacy `#/iam`, `#/fleet`, `#/cd/gate`, `#/repository`, and `#/observe` routes cleanly.
   - Skin-agnostic `DialogModel` (`PasskeyEnrollmentGate`, `UserProfile`, `SessionRoles`, `RiskConfirm`, `InviteCreatedOnce`), `RoleLeaseView`, `SkipReason`, `AuthReasonCode`, and `UiCommand` variants (never expose client-supplied role TTL overrides or manual A|B promotion).
 - **View Models & Diffs (`view`)**:

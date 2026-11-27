@@ -1,6 +1,6 @@
 # mu-console-protocol
 
-Zero-dependency (`#![no_std]` + `alloc`, `#![forbid(unsafe_code)]`) IPC view models, REST/SSE DTOs, and versioned postcard codec (`PROTOCOL_VERSION = 9`) connecting the [`mu-console`](https://github.com/LMA1980/mu-console) UI and data worker.
+Zero-dependency (`#![no_std]` + `alloc`, `#![forbid(unsafe_code)]`) IPC view models, REST/SSE DTOs, and versioned postcard codec (`PROTOCOL_VERSION = 10`) connecting the [`mu-console`](https://github.com/LMA1980/mu-console) UI and data worker.
 
 ## Architecture
 
@@ -14,7 +14,7 @@ Zero-dependency (`#![no_std]` + `alloc`, `#![forbid(unsafe_code)]`) IPC view mod
 - **Wire DTOs & Endpoints (`dto`)**:
   - 1:1 [`mu-auth`](https://github.com/LMA1980/mu-auth) mirrored types (`SubsystemId`, `SubsystemStatus`, `MaintenanceMode`, `MaintenanceOverrideDto`, `StepUpRequirement`, `RoleActivationDto`, `RoleSpecDto`, `PolicyFolioDto`, `RoleFolioIndexDto`), `AuthSessionDto` (`bound_role_specs`, `catalog_role_specs`, `leases`), ecosystem-agnostic `CdRunDto` (Cargo, .NET, Maven, custom), `ModelRunnerStatusDto`, `ModelRunnerConnectionDto`, and canonical `paths::*` constants/builders (`/api/auth/*`, `/api/auth/roles/{role_id}/renew/start`, `/api/auth/roles/{role_id}/renew`, `/api/cd/runs`, `/api/cd/deployments/{id}/rollback`, `/api/obs/v1/status/subsystems`, `/api/obs/v1/ingress/{overview,routes,upstreams}`, `/api/mr/v1/*`).
 - **Codec (`codec`)**:
-  - Versioned `postcard` framing (`varint(u32 PROTOCOL_VERSION) ++ postcard(body)`) with strict trailing-byte and version-mismatch rejection (`PROTOCOL_VERSION = 9`).
+  - Versioned `postcard` framing (`varint(u32 PROTOCOL_VERSION) ++ postcard(body)`) with strict trailing-byte and version-mismatch rejection (`PROTOCOL_VERSION = 10`).
 
 ## Ecosystem Integration
 
